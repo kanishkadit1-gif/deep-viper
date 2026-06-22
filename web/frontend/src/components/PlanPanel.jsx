@@ -7,7 +7,7 @@ const OP_META = {
 };
 
 /** Plan-approval overlay: shows the subtask plan; approve / refine / cancel. */
-export default function PlanPanel({ plan, numConflicts, onApprove, onRefine, onCancel }) {
+export default function PlanPanel({ plan, numConflicts, empty, reason, onApprove, onRefine, onCancel }) {
   const [hint, setHint] = useState("");
   const refine = () => { if (hint.trim()) { onRefine(hint.trim()); setHint(""); } };
 
@@ -17,15 +17,29 @@ export default function PlanPanel({ plan, numConflicts, onApprove, onRefine, onC
                       shadow-2xl shadow-black/60 animate-slidein overflow-hidden">
         <div className="px-5 py-4 border-b border-viper-border flex items-center justify-between">
           <div>
-            <div className="font-semibold">Verify the plan</div>
+            <div className="font-semibold">{empty ? "No plan produced" : "Verify the plan"}</div>
             <div className="text-xs text-viper-muted">
-              {plan.length} steps{numConflicts > 0 && ` · ${numConflicts} conflict(s) auto-resolved`}
+              {empty ? "The planner returned 0 steps" : `${plan.length} steps`}
+              {!empty && numConflicts > 0 && ` · ${numConflicts} conflict(s) auto-resolved`}
             </div>
           </div>
-          <span className="text-xs px-2 py-1 rounded-full bg-viper-warn/15 text-viper-warn">awaiting approval</span>
+          <span className={`text-xs px-2 py-1 rounded-full ${empty
+            ? "bg-viper-bad/15 text-viper-bad" : "bg-viper-warn/15 text-viper-warn"}`}>
+            {empty ? "needs a fix" : "awaiting approval"}
+          </span>
         </div>
 
-        <div className="max-h-72 overflow-y-auto p-3">
+        {/* The planner's own explanation of how it read the goal (or why it
+            produced no steps). Authored by the model, relayed verbatim. */}
+        {reason && (
+          <div className="px-5 pt-3">
+            <div className="text-[10px] uppercase tracking-wider text-viper-muted mb-1">Planner reasoning</div>
+            <p className={`text-sm rounded-lg px-3 py-2 ${empty
+              ? "bg-viper-bad/10 text-viper-text/90" : "bg-viper-panel2 text-viper-text/80"}`}>{reason}</p>
+          </div>
+        )}
+
+        <div className={`max-h-72 overflow-y-auto p-3 ${empty ? "hidden" : ""}`}>
           {plan.map((s) => {
             const m = OP_META[s.op] || { icon: "·", color: "text-viper-muted", label: s.op };
             return (
@@ -57,9 +71,12 @@ export default function PlanPanel({ plan, numConflicts, onApprove, onRefine, onC
             </button>
           </div>
           <div className="flex gap-2">
-            <button onClick={onApprove}
+            <button onClick={onApprove} disabled={empty}
+              title={empty ? "Refine the goal first — there are no steps to run" : ""}
               className="flex-1 rounded-xl bg-viper-good/20 text-viper-good hover:bg-viper-good/30
-                         font-medium py-2.5 text-sm transition">✓ Approve &amp; run</button>
+                         font-medium py-2.5 text-sm transition disabled:opacity-40 disabled:cursor-not-allowed">
+              ✓ Approve &amp; run
+            </button>
             <button onClick={onCancel}
               className="rounded-xl bg-viper-bad/15 text-viper-bad hover:bg-viper-bad/25
                          font-medium py-2.5 px-4 text-sm transition">Cancel</button>

@@ -17,7 +17,7 @@ class SubTask:
     stack_onto: int | None = None  # if set, exclude this obj_id from obstacles for this move_to
 
 
-def plan_tasks(goal: str, state: SceneState, llm: ChatOpenAI) -> list[SubTask]:
+def plan_tasks(goal: str, state: SceneState, llm: ChatOpenAI) -> tuple[list[SubTask], str]:
     objects = [
         {"id": o.id, "label": o.label, "center": o.center, "bbox": o.bbox}
         for o in state.objects
@@ -89,8 +89,9 @@ def plan_tasks(goal: str, state: SceneState, llm: ChatOpenAI) -> list[SubTask]:
         raw = response.content if hasattr(response, "content") else ""
 
     data = extract_json(raw, llm)
-    subtasks = [SubTask(**s) for s in data["subtasks"]]
-    print(f"[TaskPlanner] Decomposed into {len(subtasks)} sub-tasks:")
+    subtasks = [SubTask(**s) for s in data.get("subtasks", [])]
+    reason = (data.get("reason") or "").strip()
+    print(f"[TaskPlanner] Decomposed into {len(subtasks)} sub-tasks. Reason: {reason or '(none given)'}")
     for s in subtasks:
         print(f"  Step {s.step}: {s.op}({s.args})")
-    return subtasks
+    return subtasks, reason

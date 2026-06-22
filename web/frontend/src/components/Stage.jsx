@@ -64,6 +64,7 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal, 
     <div className="relative flex-1 min-h-0 flex flex-col">
       {planGate && (
         <PlanPanel plan={planGate.plan} numConflicts={planGate.num_conflicts}
+          empty={planGate.empty} reason={planGate.reason}
           onApprove={() => onAction("approve")}
           onRefine={(hint) => onAction("correction", hint)}
           onCancel={() => onAction("stop")} />

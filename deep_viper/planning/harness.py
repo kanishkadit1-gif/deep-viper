@@ -233,9 +233,14 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     while True:
         plan_goal = goal if not plan_hint else (
             goal + f"\n\nUSER REFINEMENT (follow exactly): {plan_hint}")
-        subtasks = plan_tasks(plan_goal, scene, llm)
+        # The planner returns its own one-line `reason` (how it read the goal, or
+        # — if it produced no steps — why). The harness never authors that
+        # explanation; it relays whatever the model said.
+        subtasks, reason = plan_tasks(plan_goal, scene, llm)
+
         ctl.event(EventType.PLAN_PROPOSED, f"{len(subtasks)} sub-tasks proposed",
-                  subtasks=[{"step": s.step, "op": s.op, "args": s.args} for s in subtasks])
+                  subtasks=[{"step": s.step, "op": s.op, "args": s.args} for s in subtasks],
+                  reason=reason)
 
         print(f"\n[Validator] Checking plan for spatial conflicts...")
         subtasks, conflict_log = validate_and_expand(subtasks, scene, conflict_default=conflict_default)
@@ -248,13 +253,16 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
             print(f"[Validator] No conflicts detected. Plan has {len(subtasks)} steps.")
 
         # Plan-approval gate: pause for the user to approve / refine / cancel.
+        # On an empty plan we surface the model's own reason rather than guessing.
         plan_view = [{"step": s.step, "op": s.op, "args": s.args,
                       **({"stack_onto": s.stack_onto} if getattr(s, "stack_onto", None) else {})}
                      for s in subtasks]
         decision = ctl.checkpoint(
             EventType.AWAITING_INPUT,
-            "Review the plan: approve to run, or refine it.",
+            reason or ("No steps produced — refine the goal or cancel."
+                       if not subtasks else "Review the plan: approve to run, or refine it."),
             gate=True, kind="plan_approval", plan=plan_view,
+            empty=(not subtasks), reason=reason,
             num_conflicts=len(conflict_log),
         )
         if decision.stop:
@@ -267,6 +275,13 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
             print(f"\n[Plan] Re-planning with user refinement: {plan_hint!r}")
             ctl.info(f"Re-planning with your refinement…")
             continue
+        # An empty plan must NOT silently "complete". For the CLI (NoOp) this
+        # aborts; an interactive UI would have refined or cancelled above.
+        if not subtasks:
+            print("\n[SESSION ABORTED] empty plan — nothing to execute.")
+            ctl.event(EventType.SESSION_ABORTED, "Empty plan — nothing to execute.", step=0)
+            _save_log(run_dir, goal, subtasks, [], conflict_log, [], aborted_at=0)
+            return
         break  # approved (or non-interactive NoOp -> continue immediately)
 
     metrics = []

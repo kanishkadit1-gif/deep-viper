@@ -4,9 +4,14 @@ def task_planning_prompt(goal: str, objects: list[dict]) -> str:
         for o in objects
     )
     return (
-        "You are a robot manipulation planner. Look at the scene image to understand the spatial layout.\n"
-        "Your job: read the natural-language goal, figure out which objects need to move and where, "
-        "then output a flat ordered sequence of primitive operations.\n\n"
+        "You are a robot manipulation planner.\n"
+        "The SCENE OBJECTS list below is the GROUND TRUTH set of objects (verified "
+        "detections with exact ids, labels, and pixel coords). TRUST IT COMPLETELY. "
+        "Use the image only to understand spatial layout — never to re-decide which "
+        "objects exist or what colour they are. If the list says 'red box', a red box "
+        "exists at that location even if the image looks ambiguous to you.\n"
+        "Your job: read the natural-language goal, figure out which objects need to move "
+        "and where, then output a flat ordered sequence of primitive operations.\n\n"
         "AVAILABLE OPERATIONS — use ONLY these three:\n"
         "  move_to(target_id, destination)\n"
         "    target_id  : int — the object the arm is navigating toward or currently carrying\n"
@@ -26,10 +31,15 @@ def task_planning_prompt(goal: str, objects: list[dict]) -> str:
         "7. Do not invent steps the goal does not ask for.\n\n"
         f"SCENE OBJECTS:\n{obj_desc}\n\n"
         f"GOAL: {goal}\n\n"
-        "Respond with ONLY a JSON object in this exact schema — no markdown, no explanation:\n"
-        '{ "subtasks": [ { "step": <int>, "op": "<move_to|pick|place>", "args": { ... } }, ... ] }\n\n'
+        "Respond with ONLY a JSON object in this exact schema — no markdown, no prose outside JSON:\n"
+        '{ "reason": "<one sentence: how you interpreted the goal, or — if you '
+        'output no steps — exactly why the goal cannot be turned into move/pick/place '
+        'operations on the listed objects>", '
+        '"subtasks": [ { "step": <int>, "op": "<move_to|pick|place>", "args": { ... } }, ... ] }\n\n'
         "For move_to and place, args must contain: target_id (int) and destination ([x, y]).\n"
-        "For pick, args must contain only: target_id (int)."
+        "For pick, args must contain only: target_id (int).\n"
+        "Always fill 'reason'. If you cannot produce any steps, leave 'subtasks' empty "
+        "and make 'reason' state the specific blocker (do not guess silently)."
     )
 
 
