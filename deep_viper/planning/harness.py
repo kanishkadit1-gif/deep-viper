@@ -13,6 +13,9 @@ from deep_viper.planning.task_planner import plan_tasks, SubTask
 from deep_viper.planning.plan_validator import validate_and_expand
 from deep_viper.planning.trajectory_agent import run_trajectory, TrajectoryState
 from deep_viper.vlm.client import build_llm
+from deep_viper.session.events import (
+    SessionController, NoOpController, EventType, ControlAction,
+)
 
 
 def load_scene(dataset_path: str) -> SceneState:
@@ -65,8 +68,10 @@ def load_scene(dataset_path: str) -> SceneState:
 
 def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
                     cfg: Config, llm: ChatOpenAI, run_dir: Path,
-                    committed_paths: list) -> tuple[bool, dict | None]:
+                    committed_paths: list,
+                    controller: SessionController | None = None) -> tuple[bool, dict | None]:
     """Execute one subtask. Returns (success, metrics_dict)."""
+    ctl = controller or NoOpController()
     op = subtask.op
     args = subtask.args
     label = f"step{subtask.step}_{op}"
@@ -126,6 +131,7 @@ def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
         run_dir=run_dir,
         subtask_label=label,
         save_iterations=cfg.logging.save_all_iterations,
+        controller=ctl,
     )
 
     if final_state.status == "aborted":
@@ -160,6 +166,14 @@ def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
         print(f"  [3D] Unprojected {n3d}/{len(committed['waypoints'])} waypoints to table plane (z={scene.table_z}m)")
     committed_paths.append(committed)
 
+    committed_img = run_dir / f"{label}_committed.png"
+    ctl.event(EventType.PATH_COMMITTED,
+              f"{label}: committed ({final_state.best_metrics or {}})",
+              image_path=str(committed_img) if committed_img.exists() else None,
+              step=subtask.step, label=label,
+              waypoints=committed["waypoints"],
+              metrics=final_state.best_metrics, risk=round(final_state.best_score, 4))
+
     mem_metrics = memory.metrics([f"obj_{o.id}" for o in obstacles])
     n_iters = final_state.explore_iter + final_state.refine_iter + 1
     step_metrics = {
@@ -182,9 +196,11 @@ def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
     return True, step_metrics
 
 
-def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str | None = None) -> None:
+def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str | None = None,
+                controller: SessionController | None = None) -> None:
     from deep_viper.scene.renderer import save_causal_memory_viz, save_session_gif, load_scene_image
 
+    ctl = controller or NoOpController()
     run_dir = Path(cfg.logging.runs_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -198,15 +214,23 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     print(f"Goal: {goal}")
     print(f"Run dir: {run_dir}")
     print(f"{'='*60}")
+    ctl.event(EventType.SESSION_STARTED, f"Goal: {goal}",
+              image_path=scene.image_path, goal=goal, run_dir=str(run_dir),
+              num_objects=len(scene.objects), is_3d=scene.is_3d)
 
     # Task planning (now image-grounded)
     subtasks = plan_tasks(goal, scene, llm)
+    ctl.event(EventType.PLAN_PROPOSED, f"{len(subtasks)} sub-tasks proposed",
+              subtasks=[{"step": s.step, "op": s.op, "args": s.args} for s in subtasks])
 
     # Conflict validation and plan expansion
     print(f"\n[Validator] Checking plan for spatial conflicts...")
     subtasks, conflict_log = validate_and_expand(subtasks, scene, conflict_default=conflict_default)
     if conflict_log:
         print(f"[Validator] {len(conflict_log)} conflict(s) resolved. Final plan has {len(subtasks)} steps.")
+        ctl.event(EventType.CONFLICT_DETECTED,
+                  f"{len(conflict_log)} conflict(s) resolved; plan now {len(subtasks)} steps",
+                  num_conflicts=len(conflict_log), final_steps=len(subtasks))
     else:
         print(f"[Validator] No conflicts detected. Plan has {len(subtasks)} steps.")
 
@@ -215,11 +239,23 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     total_vlm_calls = 1  # task planner
 
     for subtask in subtasks:
+        # Honor STOP between subtasks
+        decision = ctl.checkpoint(EventType.SEGMENT_STARTED,
+                                  f"Sub-task {subtask.step}: {subtask.op}",
+                                  step=subtask.step, op=subtask.op)
+        if decision.stop:
+            print(f"\n[SESSION STOPPED] by user before step {subtask.step}")
+            ctl.event(EventType.SESSION_ABORTED, "Stopped by user", step=subtask.step)
+            _save_log(run_dir, goal, subtasks, metrics, conflict_log, committed_paths,
+                      aborted_at=subtask.step)
+            return
+
         success, step_metrics = execute_subtask(
-            subtask, scene, memory, cfg, llm, run_dir, committed_paths
+            subtask, scene, memory, cfg, llm, run_dir, committed_paths, controller=ctl
         )
         if not success:
             print(f"\n[SESSION ABORTED] at step {subtask.step}")
+            ctl.event(EventType.SESSION_ABORTED, f"Aborted at step {subtask.step}", step=subtask.step)
             _save_log(run_dir, goal, subtasks, metrics, conflict_log, committed_paths, aborted_at=subtask.step)
             sys.exit(1)
         if step_metrics:
@@ -274,6 +310,11 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     # Session GIF
     save_session_gif(scene, committed_paths, initial_arm_pos, run_dir / "session.gif")
     print(f"[GIF] Session animation saved.")
+
+    ctl.event(EventType.SESSION_DONE, "Session complete",
+              image_path=str(run_dir / "session.gif"),
+              run_dir=str(run_dir), summary=session_summary,
+              num_segments=len(committed_paths))
 
 
 def _build_joint_trajectory(scene: SceneState, committed_paths: list) -> list | None:

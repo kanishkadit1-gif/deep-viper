@@ -18,6 +18,13 @@ from deep_viper.planning.geometry import (
 )
 from deep_viper.vlm.client import call_vlm, extract_json
 from deep_viper.vlm.prompts import proposal_prompt, scoring_prompt, refinement_prompt
+from deep_viper.session.events import EventType, ControlAction
+
+
+def _emit(state, etype, message="", image_path=None, **payload):
+    """Safe event emit — no-op if no controller attached."""
+    if getattr(state, "controller", None) is not None:
+        state.controller.event(etype, message, image_path=image_path, **payload)
 from deep_viper.config import PlanningConfig
 
 
@@ -51,6 +58,8 @@ class TrajectoryState:
     best_metrics: dict | None = None  # path_metrics of the current best (feasible) path
     opt_trace: list[dict] = field(default_factory=list)  # per-iteration log
     _iter_candidate: dict | None = None  # this iteration's chosen candidate (set by scoring node)
+    controller: object = None          # SessionController (events/control); None = no-op
+    extra_hint: str = ""               # user correction injected for the next propose call
 
     # metrics
     first_call_success: bool = False
@@ -286,6 +295,10 @@ def node_phase_router(state: TrajectoryState) -> TrajectoryState:
             print(f"  [Explore] FEASIBLE path locked at explore-iter {state.explore_iter} "
                   f"(risk={cand['score']:.3f}, wp={cand['metrics']['num_waypoints']}, "
                   f"len={cand['metrics']['length_px']}px). -> refine")
+            _emit(state, EventType.PATH_LOCKED,
+                  f"{state.subtask_label}: feasible path locked",
+                  image_path=str(state.run_dir / f"{state.subtask_label}_explore{state.explore_iter}.png"),
+                  risk=round(cand["score"], 3), **cand["metrics"])
             if cfg.refine_iterations > 0:
                 state.phase = "refine"
                 state.refine_iter = 0
@@ -331,6 +344,12 @@ def node_phase_router(state: TrajectoryState) -> TrajectoryState:
                                 "event": "adopted" if improved else "kept"})
         if not improved:
             print(f"  [Refine {state.refine_iter}] no improvement; kept current best.")
+
+        _emit(state, EventType.REFINE_ITER,
+              f"{state.subtask_label}: refine {state.refine_iter} "
+              f"({'adopted' if improved else 'kept'})",
+              image_path=str(state.run_dir / f"{state.subtask_label}_refine{state.refine_iter}.png"),
+              refine_iter=state.refine_iter, adopted=improved, **(state.best_metrics or {}))
 
         if state.refine_iter >= cfg.refine_iterations - 1:
             state.status = "converged"
@@ -421,6 +440,7 @@ def run_trajectory(
     run_dir: Path,
     subtask_label: str,
     save_iterations: bool = True,
+    controller: object = None,
 ) -> TrajectoryState:
     graph = build_trajectory_graph()
     init_state = TrajectoryState(
@@ -433,6 +453,7 @@ def run_trajectory(
         run_dir=run_dir,
         subtask_label=subtask_label,
         save_iterations=save_iterations,
+        controller=controller,
     )
     result = graph.invoke(init_state)
     # LangGraph returns a dict when state is a dataclass — unpack it
