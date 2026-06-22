@@ -1,57 +1,8 @@
 # Deep VIPER v2 — System Specification
-**Version:** 5.0
-**Date:** 2026-06-22
-**Status:** Phases 1–4 end-to-end; two-phase loop; multi-VLM; Co-Pilot frontend (event/control layer in progress)
-**Previous versions:** spec_v4.3.md, spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
-
----
-
-## Changelog from v4.3
-
-| # | Change |
-|---|---|
-| 1 | **Repo under git**: `git init` + initial commit. `.gitignore` excludes `venv/`, `runs/`, generated Blender scenes/renders, downloaded franka meshes, `.blend/.mp4/.gif` binaries. `requirements.txt` frozen. |
-| 2 | **Secrets moved out of source**: OpenAI API key relocated from `config.yaml` to a gitignored `.env`; `config.yaml` uses `${OPENAI_API_KEY}`. `config.py` gained a minimal `.env` loader + `${VAR}` expansion. `.env.example` committed as a template. |
-| 3 | **Co-Pilot frontend (NEW major subsystem — §5)**: an interactive app to drive planning sessions like Claude Code drives coding — watch the VLM in real time, pause/stop/resume, correct the VLM inline, edit artifacts, approve gates, save & continue. Designed so interactivity *strengthens the harness* (corrections become persistent memory) and the VLM becomes *tool-using* (simulation/self-check). |
-| 4 | **Event/control layer (Phase A of §5, IN PROGRESS)**: the harness is being refactored to (a) **emit structured events** at every pipeline checkpoint and (b) **check a control channel** (pause / stop / inject-correction) at each checkpoint. This is the foundation the whole frontend sits on. The CLI keeps working (ignores the event stream). |
-
----
-
-## 5. Co-Pilot Frontend (v5.0)
-
-### 5.1 Goal & principle
-An interactive co-pilot for robot-manipulation planning. The user drives sessions live, sees every VLM output as it is produced, and steers the system conversationally. **Design principle (non-negotiable):** every interactive feature must make the *harness itself* better, not merely surface state. User corrections become persistent signal; the VLM gains tools so it can self-check.
-
-### 5.2 Architecture
-Thin web UI + FastAPI backend wrapping the existing `deep_viper` core, packaged as a Windows app via a WebView shell (pywebview/Tauri); also openable in a browser.
-```
-WebView shell (Windows app)
-  └─ Web UI (timeline · live scene canvas · correction/chat · metrics)
-       │  WebSocket (live events) + REST (actions)
-  FastAPI backend
-       ├─ SessionManager   run / pause / resume / branch / persist
-       ├─ EventBus         streams every harness event
-       ├─ CorrectionStore  user feedback → causal memory / per-scene store
-       └─ ToolRegistry     simulate(), query_scene(), find_free_spot(), ...
-  deep_viper core (event-driven + interruptible)
-```
-
-### 5.3 Event/control layer (foundation — Phase A)
-The harness emits events and checks a control channel at each checkpoint.
-- **Events** (examples): `session_started`, `plan_proposed`, `conflict_detected`, `segment_started`, `explore_iter`, `path_locked`, `refine_iter`, `path_committed`, `ik_done`, `render_progress`, `awaiting_input`, `session_done|aborted`. Each carries a payload (text + any produced image path/metrics).
-- **Control**: at each checkpoint the harness polls a control channel for `pause`, `stop`, `resume`, `inject_correction(text)`, `override(artifact)`, `approve`. Implemented as a `SessionController` passed into `run_session`/`run_trajectory`; default no-op controller = current CLI behavior (zero behavior change).
-- **Transport-agnostic**: core emits to an in-process bus; the FastAPI layer forwards to WebSocket. Lets the core be tested headless.
-
-### 5.4 Interactive features (built on 5.3)
-- **Tier 1 — control/visibility**: live timeline; pause/stop/resume; step-through approval gates (replaces `--conflict-default`); save & resume sessions.
-- **Tier 2 — correction → harness**: inline VLM correction (hint injected into the next prompt, re-run just that stage); **corrections-as-memory** (stored against scene+obstacle context, pre-loaded next time → system learns user preferences via existing `CausalMemory`); direct artifact editing (drag waypoint / edit plan; edited path can become a teaching example).
-- **Tier 3 — innovative**: session branching/forking ("what if I'd answered differently"); VLM tool-use incl. `simulate(trajectory)` dry-run against geometry so the agent self-corrects before showing the user; live model A/B at a gate (GPT-5.4 vs Qwen on the same prompt → visualizes "how much the harness carries a weak model"); "explain this" introspection; narratable replay.
-
-### 5.5 Build phases
-A. Event/control layer + WebSocket spine + live read-only timeline (**current**).
-B. Inline correction + re-run-stage (first interactive milestone) + corrections-as-memory.
-C. Pause/stop/resume + step-through gates + session persistence/resume.
-D. Artifact editing. E. Tool-using VLM (simulation). F. Branching, model A/B, replay. G. Windows packaging.
+**Version:** 4.3
+**Date:** 2026-06-21
+**Status:** Archived — superseded by spec.md (v5.0)
+**Previous versions:** spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
 
 ---
 
