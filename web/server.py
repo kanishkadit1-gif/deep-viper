@@ -163,6 +163,13 @@ async def start_session(body: dict):
     sid = uuid.uuid4().hex[:8]
     handle = SessionHandle(session_id=sid)
     handle.goal = goal
+    handle.dataset_path = dataset_path
+    # Record a .blend path if the dataset references one (uploads set this).
+    try:
+        ds = json.loads(Path(dataset_path).read_text())
+        handle.blend_path = ds.get("blend_path", "")
+    except Exception:
+        pass
     SESSIONS[sid] = handle
     cfg = load_config(vlm_profile=vlm)
 
@@ -237,6 +244,68 @@ async def session_action(sid: str, body: dict):
         return JSONResponse({"error": "unknown session"}, status_code=404)
     h.submit_action(body.get("action", "continue"), body.get("text"), body.get("override"))
     return {"ok": True, "status": h.status}
+
+
+@app.post("/api/session/{sid}/render_video")
+async def render_video(sid: str):
+    """
+    Optional, user-triggered Phase-4 render: turn the committed joint trajectory
+    into a Blender arm video. Only available when the scene had a .blend.
+    Streams render_progress events; emits a final SESSION_DONE with the mp4 path.
+    """
+    from deep_viper.session.events import Event, EventType
+    h = SESSIONS.get(sid)
+    if not h:
+        return JSONResponse({"error": "unknown session"}, status_code=404)
+    if not h.blend_path or not Path(h.blend_path).exists():
+        return JSONResponse({"error": "no .blend for this scene — video not available"}, status_code=400)
+    if not h.run_dir or not (Path(h.run_dir) / "run_log.json").exists():
+        return JSONResponse({"error": "no completed run to render"}, status_code=400)
+
+    def _render():
+        from deep_viper.scene.blender_renderer import render_session_video
+        try:
+            log = json.loads((Path(h.run_dir) / "run_log.json").read_text())
+            ds = json.loads(Path(h.dataset_path).read_text())
+            jt = log.get("joint_trajectory")
+            if not jt:
+                h.events.put(Event(EventType.INFO, "No joint trajectory to render.", {}))
+                return
+            box_name_by_id = {o["id"]: f"Box_{o['id']}_{o['color']}" for o in ds["objects"]}
+            table_z = ds.get("table_z", 0.75)
+            arm_base = [0.0, -(0.8 / 2 + 0.12), table_z]
+            h.events.put(Event(EventType.RENDER_PROGRESS,
+                               f"Rendering {len(jt)} frames in Blender…", {"frames": len(jt)}))
+            res = render_session_video(
+                scene_blend=str(Path(h.blend_path).resolve()),
+                joint_trajectory=jt, box_name_by_id=box_name_by_id,
+                arm_base=arm_base, table_z=table_z,
+                assets_dir=str(REPO / "data" / "blender" / "assets"),
+                out_dir=h.run_dir, samples=128, resolution=(1280, 720), fps=24,
+            )
+            if res.get("video"):
+                h.events.put(Event(EventType.SESSION_DONE, "Video ready",
+                                   {"video": res["video"], "n_frames": res["n_frames"]},
+                                   image_path=None))
+            else:
+                h.events.put(Event(EventType.INFO, "Render finished but no video produced.", {}))
+        except Exception as e:
+            h.events.put(Event(EventType.INFO, f"Render error: {e}", {"error": str(e)}))
+
+    threading.Thread(target=_render, daemon=True).start()
+    return {"ok": True, "status": "rendering"}
+
+
+@app.get("/api/video")
+def get_video(path: str):
+    p = Path(path)
+    try:
+        p.resolve().relative_to(REPO)
+    except ValueError:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not p.exists():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(p, media_type="video/mp4")
 
 
 @app.websocket("/ws/{sid}")

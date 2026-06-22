@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { imageUrl } from "../api";
 import TrajectoryOverlay from "./TrajectoryOverlay";
+import PlanPanel from "./PlanPanel";
 
 const PHASE_META = {
   session_started:   { icon: "🎬", label: "Scene",     tone: "accent" },
@@ -27,7 +28,11 @@ const DOT = {
   bad: "bg-viper-bad", muted: "bg-viper-muted", sky: "bg-sky-400", violet: "bg-violet-400",
 };
 
-export default function Stage({ events, status, cursor, setCursor, scene, goal, onEdit, running }) {
+export default function Stage({ events, status, cursor, setCursor, scene, goal, onEdit, running, onAction }) {
+  // Plan-approval gate: the latest event is a plan_approval awaiting_input.
+  const lastEvt = events[events.length - 1];
+  const planGate = running && lastEvt?.type === "awaiting_input"
+                   && lastEvt?.payload?.kind === "plan_approval" ? lastEvt.payload : null;
   // Frames = steps that carry either structured geometry (drawn as an SVG
   // overlay) OR a rendered image (committed/final). Geometry is preferred.
   const frames = useMemo(
@@ -45,8 +50,19 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal, 
   // latest non-image event (for the live status line under the canvas)
   const last = events[events.length - 1];
 
+  // Video: a SESSION_DONE event may carry an mp4 path (after a render).
+  const videoEvt = useMemo(
+    () => [...events].reverse().find((e) => e.payload?.video), [events]);
+  const done = status === "done" || status === "aborted";
+
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <div className="relative flex-1 min-h-0 flex flex-col">
+      {planGate && (
+        <PlanPanel plan={planGate.plan} numConflicts={planGate.num_conflicts}
+          onApprove={() => onAction("approve")}
+          onRefine={(hint) => onAction("correction", hint)}
+          onCancel={() => onAction("stop")} />
+      )}
       {/* Goal header */}
       <div className="h-14 shrink-0 flex items-center justify-between px-6 border-b border-viper-border">
         <div className="min-w-0">
@@ -136,6 +152,38 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal, 
           )}
         </div>
       </div>
+
+      {/* Done footer: optional video render */}
+      {done && (
+        <VideoFooter done={done} hasBlend={!!scene?.has_blend} videoEvt={videoEvt}
+                     onRender={() => onAction("render_video")} />
+      )}
+    </div>
+  );
+}
+
+function VideoFooter({ hasBlend, videoEvt, onRender }) {
+  const video = videoEvt?.payload?.video;
+  return (
+    <div className="shrink-0 border-t border-viper-border px-6 py-3 flex items-center gap-4">
+      {video ? (
+        <video controls src={`/api/video?path=${encodeURIComponent(video)}`}
+               className="h-40 rounded-lg border border-viper-border bg-black" />
+      ) : hasBlend ? (
+        <>
+          <button onClick={onRender}
+            className="rounded-xl bg-viper-accent hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2.5">
+            🎬 Generate robot-arm video
+          </button>
+          <span className="text-xs text-viper-muted">
+            Renders the committed plan in Blender (optional). Takes a few minutes.
+          </span>
+        </>
+      ) : (
+        <span className="text-xs text-viper-muted">
+          No <code>.blend</code> uploaded → simulation video unavailable. The trajectory overlay above is your playback.
+        </span>
+      )}
     </div>
   );
 }

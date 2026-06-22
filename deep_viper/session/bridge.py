@@ -31,6 +31,9 @@ class SessionHandle:
     status: str = "idle"   # idle | running | paused | done | aborted | error
     goal: str = ""
     history: list = field(default_factory=list)  # all emitted events (for replay/persist)
+    dataset_path: str = ""
+    blend_path: str = ""
+    run_dir: str = ""        # filled from the SESSION_DONE event payload
 
     def submit_action(self, action: str, text: str | None = None,
                       override=None) -> None:
@@ -58,6 +61,10 @@ class QueueController(SessionController):
         self.h = handle
 
     def emit(self, event: Event) -> None:
+        # Capture the run_dir (needed later to render the video) from any event.
+        rd = event.payload.get("run_dir")
+        if rd:
+            self.h.run_dir = rd
         self.h.history.append(event.to_dict())
         self.h.events.put(event)
 

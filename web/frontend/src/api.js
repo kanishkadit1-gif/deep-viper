@@ -61,3 +61,13 @@ export async function getSessionEvents(sid) {
   if (!r.ok) return null;
   return r.json();
 }
+
+// Trigger the optional Blender video render for a finished session.
+export async function renderVideo(sid) {
+  const r = await fetch(`/api/session/${sid}/render_video`, { method: "POST" });
+  return r.json();
+}
+
+export function videoUrl(path) {
+  return path ? `/api/video?path=${encodeURIComponent(path)}` : null;
+}

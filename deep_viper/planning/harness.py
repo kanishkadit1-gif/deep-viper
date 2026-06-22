@@ -227,21 +227,47 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
               image_path=scene.image_path, goal=goal, run_dir=str(run_dir),
               num_objects=len(scene.objects), is_3d=scene.is_3d)
 
-    # Task planning (now image-grounded)
-    subtasks = plan_tasks(goal, scene, llm)
-    ctl.event(EventType.PLAN_PROPOSED, f"{len(subtasks)} sub-tasks proposed",
-              subtasks=[{"step": s.step, "op": s.op, "args": s.args} for s in subtasks])
+    # Task planning + conflict validation, with a USER PLAN-APPROVAL GATE.
+    # Loops so the user can refine the plan (talk to the LLM) before execution.
+    plan_hint = ""
+    while True:
+        plan_goal = goal if not plan_hint else (
+            goal + f"\n\nUSER REFINEMENT (follow exactly): {plan_hint}")
+        subtasks = plan_tasks(plan_goal, scene, llm)
+        ctl.event(EventType.PLAN_PROPOSED, f"{len(subtasks)} sub-tasks proposed",
+                  subtasks=[{"step": s.step, "op": s.op, "args": s.args} for s in subtasks])
 
-    # Conflict validation and plan expansion
-    print(f"\n[Validator] Checking plan for spatial conflicts...")
-    subtasks, conflict_log = validate_and_expand(subtasks, scene, conflict_default=conflict_default)
-    if conflict_log:
-        print(f"[Validator] {len(conflict_log)} conflict(s) resolved. Final plan has {len(subtasks)} steps.")
-        ctl.event(EventType.CONFLICT_DETECTED,
-                  f"{len(conflict_log)} conflict(s) resolved; plan now {len(subtasks)} steps",
-                  num_conflicts=len(conflict_log), final_steps=len(subtasks))
-    else:
-        print(f"[Validator] No conflicts detected. Plan has {len(subtasks)} steps.")
+        print(f"\n[Validator] Checking plan for spatial conflicts...")
+        subtasks, conflict_log = validate_and_expand(subtasks, scene, conflict_default=conflict_default)
+        if conflict_log:
+            print(f"[Validator] {len(conflict_log)} conflict(s) resolved. Final plan has {len(subtasks)} steps.")
+            ctl.event(EventType.CONFLICT_DETECTED,
+                      f"{len(conflict_log)} conflict(s) resolved; plan now {len(subtasks)} steps",
+                      num_conflicts=len(conflict_log), final_steps=len(subtasks))
+        else:
+            print(f"[Validator] No conflicts detected. Plan has {len(subtasks)} steps.")
+
+        # Plan-approval gate: pause for the user to approve / refine / cancel.
+        plan_view = [{"step": s.step, "op": s.op, "args": s.args,
+                      **({"stack_onto": s.stack_onto} if getattr(s, "stack_onto", None) else {})}
+                     for s in subtasks]
+        decision = ctl.checkpoint(
+            EventType.AWAITING_INPUT,
+            "Review the plan: approve to run, or refine it.",
+            gate=True, kind="plan_approval", plan=plan_view,
+            num_conflicts=len(conflict_log),
+        )
+        if decision.stop:
+            print("\n[SESSION STOPPED] user cancelled at plan approval.")
+            ctl.event(EventType.SESSION_ABORTED, "Cancelled at plan approval", step=0)
+            _save_log(run_dir, goal, subtasks, [], conflict_log, [], aborted_at=0)
+            return
+        if decision.is_correction and decision.correction:
+            plan_hint = decision.correction
+            print(f"\n[Plan] Re-planning with user refinement: {plan_hint!r}")
+            ctl.info(f"Re-planning with your refinement…")
+            continue
+        break  # approved (or non-interactive NoOp -> continue immediately)
 
     metrics = []
     committed_paths = []

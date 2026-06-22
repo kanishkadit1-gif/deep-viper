@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getModels, startSession, openSessionSocket, sendAction, getSessionEvents } from "./api";
+import { getModels, startSession, openSessionSocket, sendAction, getSessionEvents, renderVideo } from "./api";
 import Sidebar from "./components/Sidebar";
 import NewSession from "./components/NewSession";
 import Stage from "./components/Stage";
@@ -62,7 +62,17 @@ export default function App() {
     });
   }
 
-  function action(a, text) {
+  async function action(a, text) {
+    if (a === "render_video") {
+      // Reopen the WS to receive render-progress events, then trigger the render.
+      if (active?.sessionId) {
+        wsRef.current = openSessionSocket(active.sessionId, {
+          onEvent: pushEvent, onEnd: () => {},
+        });
+        await renderVideo(active.sessionId);
+      }
+      return;
+    }
     sendAction(wsRef.current, a, text);
     if (a === "pause") setStatus("paused");
     if (a === "continue") setStatus("running");
@@ -104,7 +114,7 @@ export default function App() {
           <>
             <Stage events={events} status={status} cursor={cursor} setCursor={setCursor}
                    scene={active?.scene} goal={active?.goal}
-                   running={running} onEdit={editWaypoints} />
+                   running={running} onEdit={editWaypoints} onAction={action} />
             <CoachBar status={status} running={running} onAction={action} />
           </>
         )}
