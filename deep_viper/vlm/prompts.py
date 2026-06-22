@@ -33,15 +33,30 @@ def task_planning_prompt(goal: str, objects: list[dict]) -> str:
     )
 
 
+def _correction_block(extra_hint: str) -> str:
+    """Render a user correction as a high-priority instruction block."""
+    if not extra_hint or not extra_hint.strip():
+        return ""
+    return (
+        "\n==================== USER CORRECTION ====================\n"
+        "The user reviewed your previous attempt and gave this guidance.\n"
+        "Treat it as a HARD requirement — follow it exactly:\n"
+        f"  >>> {extra_hint.strip()}\n"
+        "========================================================\n"
+    )
+
+
 def proposal_prompt(arm_pos: list[int], goal_pos: list[int],
                     obstacles: list[dict], memory_hint: str,
                     num_trajectories: int, iteration: int,
-                    image_size: dict | None = None) -> str:
+                    image_size: dict | None = None,
+                    extra_hint: str = "") -> str:
     obs_desc = "\n".join(
         f"  - {o['id']}: {o['label']} bbox={o['bbox']}"
         for o in obstacles
     )
     memory_section = f"\n{memory_hint}\n" if memory_hint else ""
+    correction = _correction_block(extra_hint)
     iter_note = ""
     if iteration > 0:
         iter_note = (
@@ -61,6 +76,7 @@ def proposal_prompt(arm_pos: list[int], goal_pos: list[int],
         f"ITERATION: {iteration}\n"
         f"{size_note}"
         f"{iter_note}"
+        f"{correction}"
         "OBSTACLES (avoid their bounding boxes entirely — do not touch or cross any bbox edge):\n"
         f"{obs_desc}\n"
         f"{memory_section}"
@@ -79,7 +95,8 @@ def proposal_prompt(arm_pos: list[int], goal_pos: list[int],
 def refinement_prompt(arm_pos: list[int], goal_pos: list[int],
                       obstacles: list[dict], best_waypoints: list[list[int]],
                       best_metrics: dict, num_trajectories: int,
-                      refine_iteration: int, image_size: dict | None = None) -> str:
+                      refine_iteration: int, image_size: dict | None = None,
+                      extra_hint: str = "") -> str:
     """
     Phase B prompt: the image shows the current best (feasible) trajectory in
     green. Ask the model for tightly-clustered variants that SIMPLIFY it —
@@ -99,6 +116,7 @@ def refinement_prompt(arm_pos: list[int], goal_pos: list[int],
         f"GOAL: {goal_pos}\n"
         f"{size_note}"
         f"REFINEMENT ROUND: {refine_iteration}\n"
+        f"{_correction_block(extra_hint)}"
         f"CURRENT BEST PATH ({best_metrics['num_waypoints']} waypoints, "
         f"length {best_metrics['length_px']}px):\n  {cur}\n\n"
         "OBSTACLES (still must not be crossed):\n"

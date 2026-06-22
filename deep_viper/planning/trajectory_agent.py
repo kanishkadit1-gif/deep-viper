@@ -60,6 +60,7 @@ class TrajectoryState:
     _iter_candidate: dict | None = None  # this iteration's chosen candidate (set by scoring node)
     controller: object = None          # SessionController (events/control); None = no-op
     extra_hint: str = ""               # user correction injected for the next propose call
+    _pending_rerun: bool = False       # re-run current stage (set by a correction)
 
     # metrics
     first_call_success: bool = False
@@ -100,6 +101,7 @@ def node_propose(state: TrajectoryState) -> TrajectoryState:
             arm_pos, goal_pos, obstacles_desc,
             state.best_trajectory, state.best_metrics or path_metrics(state.best_trajectory, arm_pos),
             state.cfg.num_trajectories, state.refine_iter, image_size=image_size,
+            extra_hint=state.extra_hint,
         )
         print(f"  [Refine {state.refine_iter}] requesting {state.cfg.num_trajectories} simpler variants "
               f"(best: {state.best_metrics['num_waypoints'] if state.best_metrics else '?'} wp)...")
@@ -120,8 +122,13 @@ def node_propose(state: TrajectoryState) -> TrajectoryState:
         prompt = proposal_prompt(
             arm_pos, goal_pos, obstacles_desc, memory_hint,
             state.cfg.num_trajectories, state.explore_iter, image_size=image_size,
+            extra_hint=state.extra_hint,
         )
         print(f"  [Explore {state.explore_iter}] requesting {state.cfg.num_trajectories} trajectories...")
+
+    applied_hint = state.extra_hint
+    if applied_hint:
+        print(f"  [Correction] applying user hint: {applied_hint!r}")
 
     raw = call_vlm(state.llm, prompt, image_to_base64(img))
     try:
@@ -132,6 +139,10 @@ def node_propose(state: TrajectoryState) -> TrajectoryState:
         trajs = []
 
     state.trajectories = trajs
+    # A correction hint applies to exactly one re-proposal, then clears so it
+    # doesn't bleed into later stages.
+    if applied_hint:
+        state.extra_hint = ""
     return state
 
 
@@ -279,6 +290,39 @@ def node_phase_router(state: TrajectoryState) -> TrajectoryState:
     cand = state._iter_candidate
     acceptable = cfg.acceptable_risk_threshold
     arm_pos = state.scene_state.arm_pos
+
+    # --- Control checkpoint: let the user STOP or inject a correction here ---
+    # Emits the just-scored candidate image and waits (only blocks if the
+    # controller is interactive; NoOp returns CONTINUE instantly).
+    ctl = getattr(state, "controller", None)
+    if ctl is not None:
+        phase_tag = f"{state.phase}{state.explore_iter if state.phase=='explore' else state.refine_iter}"
+        decision = ctl.checkpoint(
+            EventType.AWAITING_INPUT,
+            f"{state.subtask_label} [{phase_tag}] — review candidate or correct",
+            image_path=str(state.run_dir / f"{state.subtask_label}_{phase_tag}.png"),
+            gate=True,
+            phase=state.phase,
+            risk=round(cand["score"], 3) if cand else None,
+            metrics=cand["metrics"] if cand else None,
+        )
+        if decision.stop:
+            state.status = "aborted"
+            print(f"  [Control] STOP requested by user — aborting trajectory.")
+            return state
+        if decision.is_correction and decision.correction:
+            # Re-run the SAME stage with the user's hint; don't advance counters.
+            state.extra_hint = decision.correction
+            state._iter_candidate = None
+            state._pending_rerun = True
+            # Persist the correction so it pre-loads on future encounters of
+            # these obstacles (corrections-as-memory).
+            obstacle_ids = [f"obj_{o.id}" for o in state.obstacles]
+            state.causal_memory.record_correction(decision.correction, obstacle_ids)
+            print(f"  [Control] Correction received — re-running stage with hint (saved to memory).")
+            return state
+    # Correction consumed once a real iteration proceeds.
+    state._pending_rerun = False
 
     if state.phase == "explore":
         if _is_feasible(cand, acceptable):
@@ -455,7 +499,10 @@ def run_trajectory(
         save_iterations=save_iterations,
         controller=controller,
     )
-    result = graph.invoke(init_state)
+    # Raise recursion limit: explore(5)+refine(3) base cycles plus user
+    # corrections (each adds a propose->score->route loop) can exceed the
+    # default 25. Each cycle = ~3 supersteps.
+    result = graph.invoke(init_state, {"recursion_limit": 200})
     # LangGraph returns a dict when state is a dataclass — unpack it
     if isinstance(result, dict):
         final_state = init_state

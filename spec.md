@@ -48,10 +48,14 @@ The harness emits events and checks a control channel at each checkpoint.
 - **Tier 3 — innovative**: session branching/forking ("what if I'd answered differently"); VLM tool-use incl. `simulate(trajectory)` dry-run against geometry so the agent self-corrects before showing the user; live model A/B at a gate (GPT-5.4 vs Qwen on the same prompt → visualizes "how much the harness carries a weak model"); "explain this" introspection; narratable replay.
 
 ### 5.5 Build phases
-A. Event/control layer + WebSocket spine + live read-only timeline (**current**).
-B. Inline correction + re-run-stage (first interactive milestone) + corrections-as-memory.
-C. Pause/stop/resume + step-through gates + session persistence/resume.
-D. Artifact editing. E. Tool-using VLM (simulation). F. Branching, model A/B, replay. G. Windows packaging.
+A. Event/control layer (**done**): `deep_viper/session/events.py` (Event/EventType, ControlDecision/Action, SessionController + NoOp/Recording); threaded through `run_session → execute_subtask → run_trajectory`; events at every checkpoint; STOP honored.
+B. Inline correction + re-run-stage + corrections-as-memory (**done**, harness side):
+   - At each explore/refine iteration the router emits an `AWAITING_INPUT` checkpoint. A `CORRECTION` decision sets `extra_hint`, re-runs the *same* stage (counters not advanced), and the hint is rendered as a high-priority USER CORRECTION block in the proposal/refinement prompt. Hint applies once then clears (no bleed).
+   - **Corrections-as-memory**: each correction is recorded in `CausalMemory` (per-obstacle by id, or global). `query()` surfaces them so they pre-load into prompts. Persisted to `runs/user_corrections.json` (per-obstacle keyed by *label* for cross-scene reuse) and reloaded at session start → the system honors past coaching across sessions.
+   - LangGraph recursion limit raised to 200 (corrections add propose→score→route cycles).
+C. WebSocket spine + live read-only timeline UI (**next** — first frontend piece).
+D. Pause/stop/resume + step-through gates + session persistence/resume.
+E. Artifact editing. F. Tool-using VLM (simulation). G. Branching, model A/B, replay. H. Windows packaging.
 
 ---
 

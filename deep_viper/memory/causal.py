@@ -33,19 +33,15 @@ class ObstacleMemoryEntry:
     bbox: list[int]
     failed_approaches: list[ApproachRecord] = field(default_factory=list)
     working_approaches: list[ApproachRecord] = field(default_factory=list)
+    corrections: list[str] = field(default_factory=list)   # user coaching for this obstacle
     encounter_count: int = 0
 
 
 class CausalMemory:
     def __init__(self):
         self.entries: dict[str, ObstacleMemoryEntry] = {}
-
-    def _ensure(self, obstacle_id: str, label: str, bbox: list[int]) -> ObstacleMemoryEntry:
-        if obstacle_id not in self.entries:
-            self.entries[obstacle_id] = ObstacleMemoryEntry(
-                obstacle_id=obstacle_id, label=label, bbox=bbox
-            )
-        return self.entries[obstacle_id]
+        # Corrections not tied to a specific obstacle (general scene guidance).
+        self.global_corrections: list[str] = []
 
     def record_encounter(self, obstacle_id: str, label: str, bbox: list[int]) -> None:
         entry = self._ensure(obstacle_id, label, bbox)
@@ -60,6 +56,24 @@ class CausalMemory:
                        direction: str, risk_score: float) -> None:
         entry = self._ensure(obstacle_id, label, bbox)
         entry.working_approaches.append(ApproachRecord(direction, risk_score))
+
+    def record_correction(self, text: str, obstacle_ids: list[str] | None = None) -> None:
+        """
+        Persist a user correction so it pre-loads on future encounters.
+        If obstacle_ids is given, attach the correction to those obstacles
+        (so it surfaces whenever they reappear); otherwise store it globally.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        attached = False
+        for oid in (obstacle_ids or []):
+            if oid in self.entries:
+                if text not in self.entries[oid].corrections:
+                    self.entries[oid].corrections.append(text)
+                attached = True
+        if not attached and text not in self.global_corrections:
+            self.global_corrections.append(text)
 
     def query(self, obstacle_ids: list[str]) -> str:
         """Return natural language memory summary for prompt injection."""
@@ -81,10 +95,18 @@ class CausalMemory:
                     for a in e.working_approaches[-3:]
                 )
                 parts.append(f"PREFER - {works}")
+            if e.corrections:
+                parts.append("USER SAID - " + "; ".join(e.corrections[-3:]))
             lines.append(" ".join(parts))
-        if not lines:
-            return ""
-        return "Known obstacle history this session:\n" + "\n".join(f"  - {l}" for l in lines)
+
+        sections = []
+        if lines:
+            sections.append("Known obstacle history this session:\n"
+                            + "\n".join(f"  - {l}" for l in lines))
+        if self.global_corrections:
+            sections.append("User corrections to honor:\n"
+                            + "\n".join(f"  - {c}" for c in self.global_corrections[-5:]))
+        return "\n".join(sections)
 
     def metrics(self, obstacle_ids: list[str]) -> dict:
         hits = sum(1 for oid in obstacle_ids if oid in self.entries)
@@ -92,3 +114,37 @@ class CausalMemory:
             "memory_hit_rate": hits / len(obstacle_ids) if obstacle_ids else 0.0,
             "total_obstacles_in_memory": len(self.entries),
         }
+
+    # --- Cross-session persistence of corrections (system learns preferences) ---
+    def corrections_snapshot(self) -> dict:
+        """Serializable view of just the user corrections (per-obstacle + global)."""
+        return {
+            "global": list(self.global_corrections),
+            "by_label": {e.label: list(e.corrections)
+                         for e in self.entries.values() if e.corrections},
+        }
+
+    def load_corrections(self, snapshot: dict) -> None:
+        """
+        Re-apply persisted corrections from a prior session. Per-obstacle
+        corrections are keyed by label (obstacle ids are not stable across
+        scenes); they attach when an obstacle of that label is encountered.
+        """
+        if not snapshot:
+            return
+        for c in snapshot.get("global", []):
+            if c not in self.global_corrections:
+                self.global_corrections.append(c)
+        self._pending_label_corrections = dict(snapshot.get("by_label", {}))
+
+    def _ensure(self, obstacle_id: str, label: str, bbox: list[int]) -> ObstacleMemoryEntry:  # noqa: F811
+        if obstacle_id not in self.entries:
+            self.entries[obstacle_id] = ObstacleMemoryEntry(
+                obstacle_id=obstacle_id, label=label, bbox=bbox
+            )
+            # Attach any persisted corrections for this label from a prior session.
+            pending = getattr(self, "_pending_label_corrections", {})
+            for c in pending.get(label, []):
+                if c not in self.entries[obstacle_id].corrections:
+                    self.entries[obstacle_id].corrections.append(c)
+        return self.entries[obstacle_id]

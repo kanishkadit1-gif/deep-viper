@@ -209,6 +209,15 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     initial_arm_pos = scene.arm_pos[:]
     memory = CausalMemory()
 
+    # Load persisted user corrections so the system honors past coaching.
+    corrections_path = Path(cfg.logging.runs_dir) / "user_corrections.json"
+    if corrections_path.exists():
+        try:
+            memory.load_corrections(json.loads(corrections_path.read_text()))
+            print(f"[Memory] Loaded persisted user corrections from {corrections_path.name}")
+        except Exception as e:
+            print(f"[Memory] Could not load corrections: {e}")
+
     print(f"\n{'='*60}")
     print(f"Deep VIPER v2")
     print(f"Goal: {goal}")
@@ -310,6 +319,13 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     # Session GIF
     save_session_gif(scene, committed_paths, initial_arm_pos, run_dir / "session.gif")
     print(f"[GIF] Session animation saved.")
+
+    # Persist user corrections so future sessions honor them.
+    snap = memory.corrections_snapshot()
+    if snap.get("global") or snap.get("by_label"):
+        corrections_path.parent.mkdir(parents=True, exist_ok=True)
+        corrections_path.write_text(json.dumps(snap, indent=2))
+        print(f"[Memory] Saved user corrections to {corrections_path}")
 
     ctl.event(EventType.SESSION_DONE, "Session complete",
               image_path=str(run_dir / "session.gif"),
