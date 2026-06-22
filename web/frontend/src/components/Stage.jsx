@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { imageUrl } from "../api";
+import TrajectoryOverlay from "./TrajectoryOverlay";
 
 const PHASE_META = {
   session_started:   { icon: "🎬", label: "Scene",     tone: "accent" },
@@ -26,14 +27,20 @@ const DOT = {
   bad: "bg-viper-bad", muted: "bg-viper-muted", sky: "bg-sky-400", violet: "bg-violet-400",
 };
 
-export default function Stage({ events, status, cursor, setCursor, scene, goal }) {
-  // Steps that carry an image are the "frames" of the evolution.
-  const frames = useMemo(() => events.filter((e) => e.image_path), [events]);
+export default function Stage({ events, status, cursor, setCursor, scene, goal, onEdit, running }) {
+  // Frames = steps that carry either structured geometry (drawn as an SVG
+  // overlay) OR a rendered image (committed/final). Geometry is preferred.
+  const frames = useMemo(
+    () => events.filter((e) => e.payload?.geometry || e.image_path), [events]);
   const idx = cursor < 0 ? frames.length - 1 : Math.min(cursor, frames.length - 1);
   const cur = frames[idx];
-  const src = cur ? imageUrl(cur.image_path) : scene?.image;
+  const geo = cur?.payload?.geometry;
+  const src = cur?.image_path ? imageUrl(cur.image_path) : scene?.image;
   const m = cur?.payload?.metrics;
   const meta = cur ? (PHASE_META[cur.type] || PHASE_META.info) : null;
+  // The latest awaiting_input frame is editable while the session is live.
+  const isLatest = idx === frames.length - 1;
+  const editable = running && geo && cur?.type === "awaiting_input" && isLatest;
 
   // latest non-image event (for the live status line under the canvas)
   const last = events[events.length - 1];
@@ -52,14 +59,24 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal }
       {/* Big evolving canvas */}
       <div className="flex-1 min-h-0 grid place-items-center p-6">
         <div className="relative w-full max-w-4xl">
-          <div className="rounded-2xl overflow-hidden border border-viper-border bg-black
-                          shadow-2xl shadow-black/50 grid place-items-center"
+          <div className={`relative rounded-2xl overflow-hidden border bg-black
+                          shadow-2xl shadow-black/50 grid place-items-center transition
+                          ${editable ? "border-viper-accent ring-1 ring-viper-accent/50" : "border-viper-border"}`}
                style={{ aspectRatio: "16/9" }}>
-            {src ? (
+            {geo ? (
+              <TrajectoryOverlay sceneUrl={geo.scene_image ? imageUrl(geo.scene_image) : scene?.image}
+                                 geometry={geo} editable={editable} onEdit={onEdit} />
+            ) : src ? (
               <img key={src} src={src} alt="stage"
                    className="w-full h-full object-contain animate-slidein" />
             ) : (
               <Empty />
+            )}
+            {editable && (
+              <div className="absolute top-3 right-3 text-[10px] px-2 py-1 rounded-md
+                              bg-viper-accent/20 text-viper-accent border border-viper-accent/40">
+                drag waypoints to edit
+              </div>
             )}
           </div>
 

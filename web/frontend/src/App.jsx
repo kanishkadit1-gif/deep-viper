@@ -69,6 +69,11 @@ export default function App() {
     if (a === "stop") setStatus("aborted");
   }
 
+  // User dragged waypoints -> send the edited path as an OVERRIDE.
+  function editWaypoints(waypoints) {
+    if (wsRef.current) wsRef.current.send(JSON.stringify({ action: "override", override: waypoints }));
+  }
+
   function newChat() {
     setComposing(true); setActive(null); setEvents([]); setStatus("idle"); setCursor(-1);
     if (wsRef.current) { try { wsRef.current.close(); } catch {} }
@@ -98,7 +103,8 @@ export default function App() {
         ) : (
           <>
             <Stage events={events} status={status} cursor={cursor} setCursor={setCursor}
-                   scene={active?.scene} goal={active?.goal} />
+                   scene={active?.scene} goal={active?.goal}
+                   running={running} onEdit={editWaypoints} />
             <CoachBar status={status} running={running} onAction={action} />
           </>
         )}
