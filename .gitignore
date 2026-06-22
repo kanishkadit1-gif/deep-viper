@@ -40,6 +40,11 @@ Thumbs.db
 .env
 *.local.yaml
 
+# --- Frontend build artifacts ---
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+
 # --- Temp ---
 *.tmp
 /tmp/
