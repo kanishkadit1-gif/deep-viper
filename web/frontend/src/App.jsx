@@ -1,43 +1,64 @@
 import { useEffect, useRef, useState } from "react";
-import { getScenes, getModels, startSession, openSessionSocket, sendAction } from "./api";
-import ScenePicker from "./components/ScenePicker";
-import GoalComposer from "./components/GoalComposer";
-import Timeline from "./components/Timeline";
-import StageViewer from "./components/StageViewer";
-import Controls from "./components/Controls";
+import { getModels, startSession, openSessionSocket, sendAction, getSessionEvents } from "./api";
+import Sidebar from "./components/Sidebar";
+import NewSession from "./components/NewSession";
+import Stage from "./components/Stage";
+import CoachBar from "./components/CoachBar";
+import { loadSessions, saveSession } from "./sessionStore";
 
 export default function App() {
-  const [scenes, setScenes] = useState([]);
   const [models, setModels] = useState(["openai"]);
-  const [scene, setScene] = useState(null);
   const [vlm, setVlm] = useState("openai");
 
-  const [sessionId, setSessionId] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle|running|paused|done|aborted|error
+  const [sessions, setSessions] = useState([]);   // history
+  const [active, setActive] = useState(null);      // active session record
+  const [composing, setComposing] = useState(true); // showing the new-session panel
+
+  const [status, setStatus] = useState("idle");
   const [events, setEvents] = useState([]);
-  const [focus, setFocus] = useState(null); // event currently shown in the viewer
+  const [cursor, setCursor] = useState(-1);  // which step is shown on the stage (-1 = latest)
   const wsRef = useRef(null);
 
   useEffect(() => {
-    getScenes().then((s) => { setScenes(s); if (s[0]) setScene(s[0]); });
     getModels().then((m) => { setModels(m); setVlm(m[0]); });
+    setSessions(loadSessions());
   }, []);
 
   function pushEvent(evt) {
-    setEvents((prev) => [...prev, evt]);
-    if (evt.image_path) setFocus(evt); // auto-focus events with a fresh image
+    setEvents((prev) => {
+      const next = [...prev, evt];
+      return next;
+    });
+    setCursor(-1); // follow live
   }
 
-  async function handleStart(goal, conflictDefault) {
-    if (!scene || !goal.trim()) return;
-    setEvents([]); setFocus(null); setStatus("running");
+  async function handleStart(form) {
+    setComposing(false);
+    setEvents([]); setCursor(-1); setStatus("running");
+    const rec = {
+      id: crypto.randomUUID().slice(0, 8),
+      goal: form.goal, scene: form.scene, vlm,
+      createdAt: Date.now(), thumb: form.scene?.image || null,
+    };
+    setActive(rec);
+
     const res = await startSession({
-      goal, dataset_path: scene.dataset_path, vlm, conflict_default: conflictDefault,
+      goal: form.goal, dataset_path: form.scene.dataset_path,
+      vlm, conflict_default: form.conflict_default,
     });
-    setSessionId(res.session_id);
+    rec.sessionId = res.session_id;
+
     wsRef.current = openSessionSocket(res.session_id, {
       onEvent: pushEvent,
-      onEnd: (s) => setStatus(s),
+      onEnd: (s) => {
+        setStatus(s);
+        setEvents((evs) => {
+          const saved = { ...rec, status: s, events: evs };
+          setSessions((prev) => [saved, ...prev.filter((x) => x.id !== rec.id)]);
+          saveSession(saved);
+          return evs;
+        });
+      },
     });
   }
 
@@ -48,57 +69,40 @@ export default function App() {
     if (a === "stop") setStatus("aborted");
   }
 
+  function newChat() {
+    setComposing(true); setActive(null); setEvents([]); setStatus("idle"); setCursor(-1);
+    if (wsRef.current) { try { wsRef.current.close(); } catch {} }
+  }
+
+  async function openPast(rec) {
+    // Reopen a finished session: prefer server-side recorded events (full replay),
+    // fall back to whatever was cached locally.
+    setComposing(false); setActive(rec); setStatus(rec.status || "done"); setCursor(-1);
+    setEvents(rec.events || []);
+    if (rec.sessionId) {
+      const data = await getSessionEvents(rec.sessionId);
+      if (data?.events?.length) { setEvents(data.events); setStatus(data.status || "done"); }
+    }
+  }
+
   const running = status === "running" || status === "paused";
 
   return (
-    <div className="h-full flex flex-col bg-viper-bg text-viper-text">
-      <Header status={status} vlm={vlm} models={models} setVlm={setVlm} disabled={running} />
+    <div className="h-full flex bg-viper-bg text-viper-text">
+      <Sidebar sessions={sessions} active={active} onNew={newChat} onOpen={openPast}
+               models={models} vlm={vlm} setVlm={setVlm} vlmLocked={running} />
 
-      <div className="flex-1 min-h-0 grid grid-cols-[300px_1fr_minmax(360px,460px)] gap-px bg-viper-border">
-        <aside className="bg-viper-panel flex flex-col min-h-0">
-          <ScenePicker scenes={scenes} scene={scene} setScene={setScene} disabled={running} />
-          <GoalComposer scene={scene} onStart={handleStart} disabled={running || !scene} />
-        </aside>
-
-        <main className="bg-viper-bg min-h-0 flex flex-col">
-          <Timeline events={events} focus={focus} setFocus={setFocus} status={status} />
-        </main>
-
-        <section className="bg-viper-panel flex flex-col min-h-0">
-          <StageViewer event={focus} scene={scene} />
-          <Controls status={status} running={running} onAction={action} />
-        </section>
+      <div className="flex-1 min-w-0 flex flex-col">
+        {composing ? (
+          <NewSession onStart={handleStart} />
+        ) : (
+          <>
+            <Stage events={events} status={status} cursor={cursor} setCursor={setCursor}
+                   scene={active?.scene} goal={active?.goal} />
+            <CoachBar status={status} running={running} onAction={action} />
+          </>
+        )}
       </div>
     </div>
-  );
-}
-
-function Header({ status, vlm, models, setVlm, disabled }) {
-  const dot = {
-    idle: "bg-viper-muted", running: "bg-viper-good animate-pulseDot",
-    paused: "bg-viper-warn", done: "bg-viper-accent",
-    aborted: "bg-viper-bad", error: "bg-viper-bad",
-  }[status] || "bg-viper-muted";
-  return (
-    <header className="h-14 shrink-0 flex items-center justify-between px-5
-                       bg-viper-panel border-b border-viper-border">
-      <div className="flex items-center gap-3">
-        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-viper-accent to-indigo-600
-                        grid place-items-center font-black text-sm">V</div>
-        <div className="font-semibold tracking-tight">
-          Deep VIPER <span className="text-viper-muted">Co-Pilot</span>
-        </div>
-        <span className={`ml-2 w-2 h-2 rounded-full ${dot}`} />
-        <span className="text-xs text-viper-muted capitalize">{status}</span>
-      </div>
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-viper-muted">Model</span>
-        <select value={vlm} onChange={(e) => setVlm(e.target.value)} disabled={disabled}
-          className="bg-viper-panel2 border border-viper-border rounded-md px-2 py-1
-                     text-viper-text disabled:opacity-50">
-          {models.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </div>
-    </header>
   );
 }

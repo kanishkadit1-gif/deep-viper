@@ -17,6 +17,9 @@ runs/
 data/blender/scenes/
 data/blender/renders/
 
+# --- User-uploaded scenes (runtime) ---
+data/uploads/
+
 # Large rendered binaries anywhere
 *.blend
 *.blend1

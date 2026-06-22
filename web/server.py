@@ -19,7 +19,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +32,7 @@ from deep_viper.session.events import EventType
 REPO = Path(__file__).resolve().parent.parent
 SCENES_DIR = REPO / "data" / "blender" / "scenes"
 RUNS_DIR = REPO / "runs"
+UPLOADS_DIR = REPO / "data" / "uploads"
 FRONTEND_DIST = REPO / "web" / "frontend" / "dist"
 
 app = FastAPI(title="Deep VIPER Co-Pilot")
@@ -91,6 +92,54 @@ def get_image(path: str):
     return FileResponse(p)
 
 
+@app.post("/api/upload")
+async def upload_scene(image: UploadFile = File(...),
+                       dataset: UploadFile = File(...),
+                       blend: UploadFile | None = File(None)):
+    """
+    Accept a user scene: image + dataset.json (+ optional .blend). Saves them to
+    data/uploads/<id>/, rewrites dataset image_path to the saved image, and
+    returns a scene record the session can run on.
+    """
+    import uuid as _uuid
+    uid = _uuid.uuid4().hex[:8]
+    d = UPLOADS_DIR / uid
+    d.mkdir(parents=True, exist_ok=True)
+
+    img_path = d / ("render" + Path(image.filename or "img.png").suffix.lower())
+    img_path.write_bytes(await image.read())
+
+    try:
+        data = json.loads((await dataset.read()).decode("utf-8"))
+    except Exception as e:
+        return JSONResponse({"error": f"dataset.json invalid: {e}"}, status_code=400)
+    if "objects" not in data:
+        return JSONResponse({"error": "dataset.json must contain 'objects'"}, status_code=400)
+
+    # Point the dataset at the uploaded image; default image_size if absent.
+    data["image_path"] = str(img_path)
+    data.setdefault("image_size", {"width": 1280, "height": 720})
+
+    has_blend = False
+    if blend is not None and blend.filename:
+        blend_path = d / "scene.blend"
+        blend_path.write_bytes(await blend.read())
+        data["blend_path"] = str(blend_path)
+        has_blend = True
+
+    ds_path = d / "dataset.json"
+    ds_path.write_text(json.dumps(data, indent=2))
+
+    return {
+        "id": f"upload/{uid}",
+        "dataset_path": str(ds_path),
+        "image": f"/api/image?path={img_path}",
+        "num_objects": len(data.get("objects", [])),
+        "is_3d": "camera" in data,
+        "has_blend": has_blend,
+    }
+
+
 @app.get("/api/models")
 def list_models():
     """VLM profiles available in config.yaml."""
@@ -113,6 +162,7 @@ async def start_session(body: dict):
 
     sid = uuid.uuid4().hex[:8]
     handle = SessionHandle(session_id=sid)
+    handle.goal = goal
     SESSIONS[sid] = handle
     cfg = load_config(vlm_profile=vlm)
 
@@ -130,12 +180,54 @@ async def start_session(body: dict):
             handle.status = "error"
             handle.events.put(_err_event(str(e)))
         finally:
+            _persist_session(sid, handle, goal, dataset_path, vlm)
             handle.events.put(_sentinel_event())
 
     t = threading.Thread(target=_run, daemon=True)
     handle.thread = t
     t.start()
     return {"session_id": sid, "status": "running"}
+
+
+SESSIONS_STORE = RUNS_DIR / "_sessions"
+
+
+def _persist_session(sid, handle, goal, dataset_path, vlm):
+    """Save a session's full event history for later replay/resume."""
+    try:
+        SESSIONS_STORE.mkdir(parents=True, exist_ok=True)
+        (SESSIONS_STORE / f"{sid}.json").write_text(json.dumps({
+            "session_id": sid, "goal": goal, "dataset_path": dataset_path,
+            "vlm": vlm, "status": handle.status, "events": handle.history,
+        }, indent=2))
+    except Exception:
+        pass
+
+
+@app.get("/api/sessions")
+def list_saved_sessions():
+    out = []
+    if SESSIONS_STORE.exists():
+        for f in sorted(SESSIONS_STORE.glob("*.json"), key=lambda p: -p.stat().st_mtime):
+            try:
+                d = json.loads(f.read_text())
+                out.append({"session_id": d["session_id"], "goal": d.get("goal", ""),
+                            "status": d.get("status"), "n_events": len(d.get("events", []))})
+            except Exception:
+                continue
+    return out
+
+
+@app.get("/api/session/{sid}/events")
+def get_session_events(sid: str):
+    """Replay: return a finished session's recorded events (from memory or disk)."""
+    h = SESSIONS.get(sid)
+    if h and h.history:
+        return {"session_id": sid, "status": h.status, "events": h.history}
+    f = SESSIONS_STORE / f"{sid}.json"
+    if f.exists():
+        return json.loads(f.read_text())
+    return JSONResponse({"error": "unknown session"}, status_code=404)
 
 
 @app.post("/api/session/{sid}/action")

@@ -29,6 +29,8 @@ class SessionHandle:
     stopped: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     status: str = "idle"   # idle | running | paused | done | aborted | error
+    goal: str = ""
+    history: list = field(default_factory=list)  # all emitted events (for replay/persist)
 
     def submit_action(self, action: str, text: str | None = None) -> None:
         """Called from the web layer when the user clicks pause/stop/correct."""
@@ -55,10 +57,13 @@ class QueueController(SessionController):
         self.h = handle
 
     def emit(self, event: Event) -> None:
+        self.h.history.append(event.to_dict())
         self.h.events.put(event)
 
     def checkpoint(self, etype, message="", image_path=None, gate=False, **payload):
-        self.emit(Event(etype, message, payload, image_path))
+        ev = Event(etype, message, payload, image_path)
+        self.h.history.append(ev.to_dict())
+        self.h.events.put(ev)
 
         # Hard stop takes priority.
         if self.h.stopped.is_set():
