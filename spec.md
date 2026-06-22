@@ -53,9 +53,9 @@ B. Inline correction + re-run-stage + corrections-as-memory (**done**, harness s
    - At each explore/refine iteration the router emits an `AWAITING_INPUT` checkpoint. A `CORRECTION` decision sets `extra_hint`, re-runs the *same* stage (counters not advanced), and the hint is rendered as a high-priority USER CORRECTION block in the proposal/refinement prompt. Hint applies once then clears (no bleed).
    - **Corrections-as-memory**: each correction is recorded in `CausalMemory` (per-obstacle by id, or global). `query()` surfaces them so they pre-load into prompts. Persisted to `runs/user_corrections.json` (per-obstacle keyed by *label* for cross-scene reuse) and reloaded at session start → the system honors past coaching across sessions.
    - LangGraph recursion limit raised to 200 (corrections add propose→score→route cycles).
-C. WebSocket spine + live read-only timeline UI (**next** — first frontend piece).
-D. Pause/stop/resume + step-through gates + session persistence/resume.
-E. Artifact editing. F. Tool-using VLM (simulation). G. Branching, model A/B, replay. H. Windows packaging.
+C. WebSocket spine + live timeline UI (**done**): FastAPI backend (`web/server.py`) wraps `run_session` in a bg thread via `QueueController` (`deep_viper/session/bridge.py`); streams events over WebSocket, accepts control actions, serves images + the built UI. React+Tailwind+Vite frontend (`web/frontend/`): live animated event timeline, scene picker, goal composer, stage viewer, VLM-coaching control panel (inline correction + pause/stop wired to the control channel). Verified end-to-end.
+D. Pause/stop/resume + step-through gates + session persistence/resume (**next**; control wiring exists, needs UI polish + save/resume).
+E. Artifact editing. F. Tool-using VLM (simulation). G. Branching, model A/B, replay. H. Windows packaging (pywebview/Tauri).
 
 ---
 
