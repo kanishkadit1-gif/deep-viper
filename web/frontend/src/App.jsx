@@ -1,22 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { getModels, startSession, openSessionSocket, sendAction, getSessionEvents, renderVideo } from "./api";
+import {
+  getModels, startSession, openSessionSocket, sendAction,
+  sendMessage, getSessionEvents, renderVideo,
+} from "./api";
 import Sidebar from "./components/Sidebar";
 import NewSession from "./components/NewSession";
-import Stage from "./components/Stage";
-import CoachBar from "./components/CoachBar";
+import Session from "./components/Session";
 import { loadSessions, saveSession } from "./sessionStore";
 
 export default function App() {
   const [models, setModels] = useState(["openai"]);
   const [vlm, setVlm] = useState("openai");
 
-  const [sessions, setSessions] = useState([]);   // history
-  const [active, setActive] = useState(null);      // active session record
-  const [composing, setComposing] = useState(true); // showing the new-session panel
+  const [sessions, setSessions] = useState([]);
+  const [active, setActive] = useState(null);
+  const [composing, setComposing] = useState(true);
 
   const [status, setStatus] = useState("idle");
   const [events, setEvents] = useState([]);
-  const [cursor, setCursor] = useState(-1);  // which step is shown on the stage (-1 = latest)
   const wsRef = useRef(null);
 
   useEffect(() => {
@@ -24,31 +25,27 @@ export default function App() {
     setSessions(loadSessions());
   }, []);
 
-  function pushEvent(evt) {
-    setEvents((prev) => {
-      const next = [...prev, evt];
-      return next;
-    });
-    setCursor(-1); // follow live
-  }
+  function pushEvent(evt) { setEvents((prev) => [...prev, evt]); }
 
   async function handleStart(form) {
     setComposing(false);
-    setEvents([]); setCursor(-1); setStatus("running");
+    setEvents([]); setStatus("running");
     const rec = {
       id: crypto.randomUUID().slice(0, 8),
       goal: form.goal, scene: form.scene, vlm,
       createdAt: Date.now(), thumb: form.scene?.image || null,
     };
     setActive(rec);
-
     const res = await startSession({
       goal: form.goal, dataset_path: form.scene.dataset_path,
       vlm, conflict_default: form.conflict_default,
     });
     rec.sessionId = res.session_id;
+    openWs(rec);
+  }
 
-    wsRef.current = openSessionSocket(res.session_id, {
+  function openWs(rec) {
+    wsRef.current = openSessionSocket(rec.sessionId, {
       onEvent: pushEvent,
       onEnd: (s) => {
         setStatus(s);
@@ -62,37 +59,38 @@ export default function App() {
     });
   }
 
-  async function action(a, text) {
-    if (a === "render_video") {
-      // Reopen the WS to receive render-progress events, then trigger the render.
-      if (active?.sessionId) {
-        wsRef.current = openSessionSocket(active.sessionId, {
-          onEvent: pushEvent, onEnd: () => {},
-        });
-        await renderVideo(active.sessionId);
-      }
-      return;
-    }
-    sendAction(wsRef.current, a, text);
+  // The single chat input. Routes by session state on the backend.
+  async function say(text) {
+    if (!active?.sessionId || !text.trim()) return;
+    // Echo the user's message into the timeline immediately.
+    pushEvent({ type: "user_message", message: text, ts: Date.now() / 1000 });
+    const res = await sendMessage(active.sessionId, text);
+    if (res?.status) setStatus(res.status === "awaiting" ? "running" : res.status);
+  }
+
+  function control(a) {
+    sendAction(wsRef.current, a);
     if (a === "pause") setStatus("paused");
-    if (a === "continue") setStatus("running");
     if (a === "stop") setStatus("aborted");
   }
 
-  // User dragged waypoints -> send the edited path as an OVERRIDE.
+  function approve() { sendAction(wsRef.current, "approve"); }
+
   function editWaypoints(waypoints) {
     if (wsRef.current) wsRef.current.send(JSON.stringify({ action: "override", override: waypoints }));
   }
 
+  async function generateVideo() {
+    if (active?.sessionId) { openWs(active); await renderVideo(active.sessionId); }
+  }
+
   function newChat() {
-    setComposing(true); setActive(null); setEvents([]); setStatus("idle"); setCursor(-1);
+    setComposing(true); setActive(null); setEvents([]); setStatus("idle");
     if (wsRef.current) { try { wsRef.current.close(); } catch {} }
   }
 
   async function openPast(rec) {
-    // Reopen a finished session: prefer server-side recorded events (full replay),
-    // fall back to whatever was cached locally.
-    setComposing(false); setActive(rec); setStatus(rec.status || "done"); setCursor(-1);
+    setComposing(false); setActive(rec); setStatus(rec.status || "done");
     setEvents(rec.events || []);
     if (rec.sessionId) {
       const data = await getSessionEvents(rec.sessionId);
@@ -100,23 +98,18 @@ export default function App() {
     }
   }
 
-  const running = status === "running" || status === "paused";
-
   return (
     <div className="h-full flex bg-viper-bg text-viper-text">
       <Sidebar sessions={sessions} active={active} onNew={newChat} onOpen={openPast}
-               models={models} vlm={vlm} setVlm={setVlm} vlmLocked={running} />
-
+               models={models} vlm={vlm} setVlm={setVlm}
+               vlmLocked={status === "running" || status === "paused"} />
       <div className="flex-1 min-w-0 flex flex-col">
         {composing ? (
           <NewSession onStart={handleStart} />
         ) : (
-          <>
-            <Stage events={events} status={status} cursor={cursor} setCursor={setCursor}
-                   scene={active?.scene} goal={active?.goal}
-                   running={running} onEdit={editWaypoints} onAction={action} />
-            <CoachBar status={status} running={running} onAction={action} />
-          </>
+          <Session events={events} status={status} scene={active?.scene} goal={active?.goal}
+                   onSay={say} onApprove={approve} onControl={control}
+                   onEdit={editWaypoints} onRenderVideo={generateVideo} />
         )}
       </div>
     </div>

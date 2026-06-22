@@ -55,6 +55,15 @@ export function sendAction(ws, action, text) {
   }
 }
 
+// One chat input -> backend routes by session state (approve / refine / coach).
+export async function sendMessage(sid, text) {
+  const r = await fetch(`/api/session/${sid}/message`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return r.json();
+}
+
 // Replay: fetch a finished session's recorded events from the backend.
 export async function getSessionEvents(sid) {
   const r = await fetch(`/api/session/${sid}/events`);

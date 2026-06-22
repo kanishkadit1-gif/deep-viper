@@ -237,8 +237,19 @@ def get_session_events(sid: str):
     return JSONResponse({"error": "unknown session"}, status_code=404)
 
 
+@app.post("/api/session/{sid}/message")
+async def session_message(sid: str, body: dict):
+    """One chat input. Routes free text by session state (approve/refine/coach)."""
+    h = SESSIONS.get(sid)
+    if not h:
+        return JSONResponse({"error": "unknown session"}, status_code=404)
+    intent = h.message(body.get("text", ""))
+    return {"ok": True, "intent": intent, "status": h.status}
+
+
 @app.post("/api/session/{sid}/action")
 async def session_action(sid: str, body: dict):
+    """Explicit control buttons (pause/stop/approve/override)."""
     h = SESSIONS.get(sid)
     if not h:
         return JSONResponse({"error": "unknown session"}, status_code=404)

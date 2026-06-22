@@ -28,16 +28,40 @@ class SessionHandle:
     paused: threading.Event = field(default_factory=threading.Event)
     stopped: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
-    status: str = "idle"   # idle | running | paused | done | aborted | error
+    status: str = "idle"   # idle | running | awaiting | paused | done | aborted | error
+    awaiting_kind: str = ""  # what a blocking gate is waiting for, e.g. "plan_approval"
     goal: str = ""
     history: list = field(default_factory=list)  # all emitted events (for replay/persist)
     dataset_path: str = ""
     blend_path: str = ""
     run_dir: str = ""        # filled from the SESSION_DONE event payload
 
+    # Words that mean "approve / proceed" when the user replies to a gate.
+    _APPROVE_WORDS = {"approve", "run", "run it", "go", "yes", "ok", "okay",
+                      "looks good", "proceed", "do it", "execute", "continue"}
+
+    def message(self, text: str) -> str:
+        """
+        Single chat entry point. Routes one free-text message by session state:
+          - awaiting a gate: an approve-word -> approve; else -> refine (re-plan).
+          - running:        -> coach the VLM (correction).
+        Returns the intent it resolved to (for the UI to echo).
+        """
+        t = (text or "").strip()
+        low = t.lower().rstrip(".!")
+        if self.status == "awaiting":
+            if low in self._APPROVE_WORDS or low.startswith(("approve", "run", "go ahead", "looks good")):
+                self._control.put(ControlDecision(ControlAction.APPROVE))
+                return "approve"
+            self._control.put(ControlDecision(ControlAction.CORRECTION, correction=t))
+            return "refine"
+        # running (or paused) -> treat as coaching the current step
+        self._control.put(ControlDecision(ControlAction.CORRECTION, correction=t))
+        return "coach"
+
     def submit_action(self, action: str, text: str | None = None,
                       override=None) -> None:
-        """Called from the web layer when the user clicks pause/stop/correct/edit."""
+        """Explicit control buttons (pause/stop/approve/override)."""
         a = ControlAction(action)
         if a == ControlAction.PAUSE:
             self.paused.set()
@@ -46,7 +70,6 @@ class SessionHandle:
             self.stopped.set()
             self.paused.clear()  # unblock if paused so the stop takes effect
         else:
-            # resume / correction / approve / override -> queue a decision
             if a == ControlAction.CONTINUE:
                 self.paused.clear()
                 self.status = "running"
@@ -68,13 +91,33 @@ class QueueController(SessionController):
         self.h.history.append(event.to_dict())
         self.h.events.put(event)
 
-    def checkpoint(self, etype, message="", image_path=None, gate=False, **payload):
+    def checkpoint(self, etype, message="", image_path=None, gate=False,
+                   blocking=False, **payload):
         ev = Event(etype, message, payload, image_path)
         self.h.history.append(ev.to_dict())
         self.h.events.put(ev)
 
         # Hard stop takes priority.
         if self.h.stopped.is_set():
+            return ControlDecision(ControlAction.STOP)
+
+        # A BLOCKING checkpoint (e.g. plan approval) WAITS for an explicit user
+        # decision: approve / correction / override / stop. The harness must not
+        # proceed (or abort) until the user responds. Non-blocking gates (e.g.
+        # per-iteration trajectory review) fall through and keep running.
+        if blocking:
+            self.h.status = "awaiting"
+            self.h.awaiting_kind = payload.get("kind", "")
+            while not self.h.stopped.is_set():
+                try:
+                    decision = self.h._control.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                if decision.action == ControlAction.STOP:
+                    return ControlDecision(ControlAction.STOP)
+                self.h.status = "running"
+                self.h.awaiting_kind = ""
+                return decision
             return ControlDecision(ControlAction.STOP)
 
         # If paused, block here until resumed or stopped.
