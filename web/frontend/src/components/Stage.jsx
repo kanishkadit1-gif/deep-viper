@@ -53,6 +53,11 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal, 
   // Video: a SESSION_DONE event may carry an mp4 path (after a render).
   const videoEvt = useMemo(
     () => [...events].reverse().find((e) => e.payload?.video), [events]);
+  // Baseline playback: the session GIF (animated dot along the committed path),
+  // generated every run regardless of .blend. Carried on session_done.image_path.
+  const gifEvt = useMemo(
+    () => [...events].reverse().find(
+      (e) => e.type === "session_done" && e.image_path?.endsWith(".gif")), [events]);
   const done = status === "done" || status === "aborted";
 
   return (
@@ -153,37 +158,53 @@ export default function Stage({ events, status, cursor, setCursor, scene, goal, 
         </div>
       </div>
 
-      {/* Done footer: optional video render */}
+      {/* Done footer: GIF playback (always) + optional Blender video upgrade */}
       {done && (
-        <VideoFooter done={done} hasBlend={!!scene?.has_blend} videoEvt={videoEvt}
-                     onRender={() => onAction("render_video")} />
+        <VideoFooter hasBlend={!!scene?.has_blend} videoEvt={videoEvt}
+                     gifEvt={gifEvt} onRender={() => onAction("render_video")} />
       )}
     </div>
   );
 }
 
-function VideoFooter({ hasBlend, videoEvt, onRender }) {
+function VideoFooter({ hasBlend, videoEvt, gifEvt, onRender }) {
   const video = videoEvt?.payload?.video;
+  const gif = gifEvt?.image_path ? imageUrl(gifEvt.image_path) : null;
+
   return (
     <div className="shrink-0 border-t border-viper-border px-6 py-3 flex items-center gap-4">
+      {/* Final playback: rendered MP4 if available, else the session GIF. */}
       {video ? (
-        <video controls src={`/api/video?path=${encodeURIComponent(video)}`}
+        <video controls autoPlay loop src={`/api/video?path=${encodeURIComponent(video)}`}
                className="h-40 rounded-lg border border-viper-border bg-black" />
-      ) : hasBlend ? (
-        <>
-          <button onClick={onRender}
-            className="rounded-xl bg-viper-accent hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2.5">
-            🎬 Generate robot-arm video
-          </button>
-          <span className="text-xs text-viper-muted">
-            Renders the committed plan in Blender (optional). Takes a few minutes.
-          </span>
-        </>
+      ) : gif ? (
+        <img src={gif} alt="session playback"
+             className="h-40 rounded-lg border border-viper-border bg-black object-contain" />
       ) : (
-        <span className="text-xs text-viper-muted">
-          No <code>.blend</code> uploaded → simulation video unavailable. The trajectory overlay above is your playback.
-        </span>
+        <span className="text-xs text-viper-muted">Rendering playback…</span>
       )}
+
+      {/* Right side: label + optional upgrade to the full 3D arm video. */}
+      <div className="flex-1">
+        {video ? (
+          <div className="text-xs text-viper-good">✓ Blender robot-arm video</div>
+        ) : (
+          <div className="text-xs text-viper-muted mb-2">
+            Animated trajectory playback (the committed path).
+          </div>
+        )}
+        {!video && hasBlend && (
+          <button onClick={onRender}
+            className="rounded-xl bg-viper-accent hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2">
+            🎬 Render full robot-arm video
+          </button>
+        )}
+        {!video && !hasBlend && (
+          <div className="text-[11px] text-viper-muted/80">
+            Upload a <code>.blend</code> next time to render the full 3D robot-arm simulation.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
