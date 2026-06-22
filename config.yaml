@@ -1,0 +1,53 @@
+# Active VLM profile. Override at runtime with: python run.py --vlm lmstudio
+vlm_profile: "openai"
+
+# Default profile (kept for backward compatibility — `vlm:` is the "openai" profile).
+vlm:
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-5.4"
+  timeout: 120
+  temperature: 0.7
+  max_tokens: 4096
+  api_key: "${OPENAI_API_KEY}"
+
+# Named alternative backends. Select with --vlm <name>.
+vlm_profiles:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-5.4"
+    timeout: 120
+    temperature: 0.7
+    max_tokens: 4096
+    api_key: "${OPENAI_API_KEY}"
+
+  # Local small VLM via LM Studio (OpenAI-compatible server).
+  # Start the model in LM Studio, then: python run.py --vlm lmstudio
+  lmstudio:
+    base_url: "http://127.0.0.1:1367/v1"
+    model: "qwen/qwen3-vl-4b"
+    timeout: 300          # local model is slower — generous timeout
+    temperature: 0.4      # lower temp → more deterministic JSON from a small model
+    max_tokens: 4096
+    api_key: "lm-studio"  # LM Studio ignores the key, but the client requires one
+
+
+planning:
+  max_iterations: 5
+  num_trajectories: 5
+  convergence_risk_threshold: 0.2
+  acceptable_risk_threshold: 0.5
+  arrival_threshold_px: 20
+  compass_directions: 8
+  # Two-phase explore->refine loop (v4.3)
+  explore_iterations: 5        # Phase A: max iterations to find a feasible path
+  refine_iterations: 3         # Phase B: refinement rounds around the locked path
+  optimality_wp_weight: 0.5    # objective optimality: fewer-waypoints weight
+  optimality_len_weight: 0.5   # objective optimality: shorter-length weight
+
+logging:
+  runs_dir: "runs"
+  save_all_iterations: true
+
+langsmith:
+  project_name: "deep-viper-v2"
+  tracing: false

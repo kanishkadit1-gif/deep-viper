@@ -1,0 +1,158 @@
+{
+  "image_path": "C:\\Users\\asus\\Desktop\\deep learning_iisc\\deep_viper\\data\\2d-6.png",
+  "image_size": {
+    "width": 1132,
+    "height": 1390
+  },
+  "target_coords": {
+    "1": [
+      255,
+      326
+    ],
+    "2": [
+      816,
+      337
+    ],
+    "3": [
+      263,
+      748
+    ],
+    "4": [
+      911,
+      721
+    ],
+    "5": [
+      621,
+      1049
+    ]
+  },
+  "target_boxes": {
+    "1": [
+      138,
+      206,
+      373,
+      447
+    ],
+    "2": [
+      702,
+      220,
+      931,
+      454
+    ],
+    "3": [
+      141,
+      623,
+      385,
+      873
+    ],
+    "4": [
+      801,
+      610,
+      1021,
+      833
+    ],
+    "5": [
+      511,
+      919,
+      731,
+      1180
+    ]
+  },
+  "obstacle_boxes": {},
+  "arm_start_pos": [
+    566,
+    1340
+  ],
+  "objects": [
+    {
+      "id": 1,
+      "label": "green square",
+      "color": "green",
+      "shape": "square",
+      "center": [
+        255,
+        326
+      ],
+      "bbox": [
+        138,
+        206,
+        373,
+        447
+      ],
+      "area_px": 52035
+    },
+    {
+      "id": 2,
+      "label": "yellow square",
+      "color": "yellow",
+      "shape": "square",
+      "center": [
+        816,
+        337
+      ],
+      "bbox": [
+        702,
+        220,
+        931,
+        454
+      ],
+      "area_px": 52014
+    },
+    {
+      "id": 3,
+      "label": "red square",
+      "color": "red",
+      "shape": "square",
+      "center": [
+        263,
+        748
+      ],
+      "bbox": [
+        141,
+        623,
+        385,
+        873
+      ],
+      "area_px": 58325
+    },
+    {
+      "id": 4,
+      "label": "red circle",
+      "color": "red",
+      "shape": "circle",
+      "center": [
+        911,
+        721
+      ],
+      "bbox": [
+        801,
+        610,
+        1021,
+        833
+      ],
+      "area_px": 38301
+    },
+    {
+      "id": 5,
+      "label": "red triangle",
+      "color": "red",
+      "shape": "triangle",
+      "center": [
+        621,
+        1049
+      ],
+      "bbox": [
+        511,
+        919,
+        731,
+        1180
+      ],
+      "area_px": 32194
+    }
+  ],
+  "sample_goals": [
+    "move target 1 to [566, 695]",
+    "stack target 1 on target 2",
+    "move target 3 to [100, 100]"
+  ]
+}

@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Virtual environment (393M, recreate from requirements) ---
+venv/
+.venv/
+env/
+
+# --- Run outputs (1.1G of generated images/gifs/videos/logs) ---
+runs/
+
+# --- Generated Blender scene outputs (regenerable via generate_scene.py) ---
+data/blender/scenes/
+data/blender/renders/
+
+# Large rendered binaries anywhere
+*.blend
+*.blend1
+*.mp4
+*.gif
+
+# --- Downloaded third-party robot assets (291M; fetch per assets/README.md) ---
+data/blender/assets/panda_meshes/
+data/blender/assets/franka_description/
+
+# --- Editor / OS cruft ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Secrets / local config overrides (NOTE: config.yaml currently holds the
+#     API key and IS tracked per project history; add a local override here if
+#     you later split secrets out) ---
+.env
+*.local.yaml
+
+# --- Temp ---
+*.tmp
+/tmp/
