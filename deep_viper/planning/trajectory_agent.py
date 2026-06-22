@@ -25,6 +25,28 @@ def _emit(state, etype, message="", image_path=None, **payload):
     """Safe event emit — no-op if no controller attached."""
     if getattr(state, "controller", None) is not None:
         state.controller.event(etype, message, image_path=image_path, **payload)
+
+
+def _geometry_payload(state):
+    """
+    Structured trajectory data for the client to draw an SVG overlay on the
+    static scene image (replaces per-stage PNGs). Includes all candidate
+    trajectories, their scores, the chosen best, and scene context.
+    """
+    arm_pos = state.scene_state.arm_pos
+    return {
+        "scene_image": state.scene_state.image_path,
+        "image_size": state.scene_state.image_size,
+        "arm_pos": arm_pos,
+        "goal_pos": state.goal_pos,
+        "obstacles": [{"id": o.id, "label": o.label, "bbox": o.bbox}
+                      for o in state.obstacles],
+        "trajectories": state.trajectories,
+        "scores": [round(s, 3) for s in state.trajectory_scores],
+        "best": state.best_trajectory,
+        "best_metrics": state.best_metrics,
+        "phase": state.phase,
+    }
 from deep_viper.config import PlanningConfig
 
 
@@ -248,7 +270,9 @@ def node_draw_and_score(state: TrajectoryState) -> TrajectoryState:
                             dirn, a["risk"], a.get("reason", "")
                         )
 
-    # Draw all trajectories with scores and ranking on one image
+    # Build the scored summary image IN MEMORY — the VLM sees this on the next
+    # iteration (visual self-critique). It is NOT written to disk anymore: the
+    # client draws the trajectories as an SVG overlay from the geometry payload.
     phase_tag = f"{state.phase}{state.explore_iter if state.phase=='explore' else state.refine_iter}"
     summary_img = draw_all_scored(
         base_img, state.trajectories, all_arrow_scores, scores,
@@ -256,10 +280,15 @@ def node_draw_and_score(state: TrajectoryState) -> TrajectoryState:
     )
     state.current_img = summary_img
 
+    # Stash structured geometry for the iteration events to carry.
+    state._last_arrow_scores = all_arrow_scores
+    state._phase_tag = phase_tag
+
     if state.save_iterations:
+        # Optional disk PNG retained only when explicitly requested (debug/replay
+        # of legacy runs). Off by default -> faster sessions.
         save_path = state.run_dir / f"{state.subtask_label}_{phase_tag}.png"
         save_image(summary_img, save_path)
-        print(f"  [Score] Saved: {save_path.name}")
 
     cand = state._iter_candidate
     if cand:
@@ -274,6 +303,39 @@ def _is_feasible(cand: dict, acceptable: float) -> bool:
         return False
     return (cand["score"] < acceptable
             and not any(a["risk"] >= 1.0 for a in cand["arrow_scores"]))
+
+
+def _score_one_trajectory(state, waypoints: list) -> dict:
+    """
+    Score a single (e.g. user-edited) trajectory exactly like node_draw_and_score:
+    geometry collision check (hard) + VLM per-arrow risk, then path metrics.
+    Returns a candidate dict {trajectory, score, arrow_scores, metrics}.
+    """
+    arm_pos = state.scene_state.arm_pos
+    goal_pos = state.goal_pos
+    obstacles_desc = [{"id": f"obj_{o.id}", "label": o.label, "bbox": o.bbox}
+                      for o in state.obstacles]
+    base_img = draw_base_scene(state.scene_state)
+    traj_img = draw_single_trajectory(base_img, waypoints, arm_pos, goal_pos)
+    geo = check_trajectory_collisions(waypoints, arm_pos, state.obstacles)
+
+    raw = call_vlm(state.llm, scoring_prompt(arm_pos, goal_pos, obstacles_desc, 1, waypoints),
+                   image_to_base64(traj_img))
+    try:
+        arrow_scores = extract_json(raw, state.llm)["arrow_scores"]
+    except Exception:
+        arrow_scores = [{"arrow_idx": i, "risk": 0.5, "reason": "parse error"}
+                        for i in range(len(waypoints))]
+
+    collision_arrows = {r["arrow_idx"] for r in geo if r["collision"]}
+    for a in arrow_scores:
+        if a["arrow_idx"] in collision_arrows:
+            a["risk"] = 1.0
+            a["reason"] = "geometry collision (user edit)"
+    score = 1.0 if collision_arrows else (
+        sum(a["risk"] for a in arrow_scores) / max(len(arrow_scores), 1))
+    return {"trajectory": waypoints, "score": score, "arrow_scores": arrow_scores,
+            "metrics": path_metrics(waypoints, arm_pos, state.obstacles)}
 
 
 def node_phase_router(state: TrajectoryState) -> TrajectoryState:
@@ -291,20 +353,24 @@ def node_phase_router(state: TrajectoryState) -> TrajectoryState:
     acceptable = cfg.acceptable_risk_threshold
     arm_pos = state.scene_state.arm_pos
 
-    # --- Control checkpoint: let the user STOP or inject a correction here ---
-    # Emits the just-scored candidate image and waits (only blocks if the
-    # controller is interactive; NoOp returns CONTINUE instantly).
+    # --- Control checkpoint: let the user STOP, correct, or OVERRIDE here ---
+    # Carries structured geometry (no PNG) so the client draws an SVG overlay
+    # on the static scene image and can drag waypoints. Only blocks if the
+    # controller is interactive; NoOp returns CONTINUE instantly.
     ctl = getattr(state, "controller", None)
     if ctl is not None:
         phase_tag = f"{state.phase}{state.explore_iter if state.phase=='explore' else state.refine_iter}"
+        geo = _geometry_payload(state)
+        geo["candidate"] = cand["trajectory"] if cand else None
+        geo["arrow_scores"] = cand["arrow_scores"] if cand else None
         decision = ctl.checkpoint(
             EventType.AWAITING_INPUT,
             f"{state.subtask_label} [{phase_tag}] — review candidate or correct",
-            image_path=str(state.run_dir / f"{state.subtask_label}_{phase_tag}.png"),
             gate=True,
             phase=state.phase,
             risk=round(cand["score"], 3) if cand else None,
             metrics=cand["metrics"] if cand else None,
+            geometry=geo,
         )
         if decision.stop:
             state.status = "aborted"
@@ -321,6 +387,15 @@ def node_phase_router(state: TrajectoryState) -> TrajectoryState:
             state.causal_memory.record_correction(decision.correction, obstacle_ids)
             print(f"  [Control] Correction received — re-running stage with hint (saved to memory).")
             return state
+        if decision.action == ControlAction.OVERRIDE and decision.override:
+            # User dragged the waypoints. Re-score their edited path (geometry +
+            # VLM); adopt it as the candidate and let the normal logic proceed.
+            edited = decision.override
+            cand = _score_one_trajectory(state, edited)
+            state._iter_candidate = cand
+            print(f"  [Control] User override — re-scored edited path: "
+                  f"risk={cand['score']:.3f}, wp={cand['metrics']['num_waypoints']}")
+            # fall through to normal phase logic with the re-scored candidate
     # Correction consumed once a real iteration proceeds.
     state._pending_rerun = False
 

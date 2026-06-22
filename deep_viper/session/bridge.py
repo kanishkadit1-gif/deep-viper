@@ -32,8 +32,9 @@ class SessionHandle:
     goal: str = ""
     history: list = field(default_factory=list)  # all emitted events (for replay/persist)
 
-    def submit_action(self, action: str, text: str | None = None) -> None:
-        """Called from the web layer when the user clicks pause/stop/correct."""
+    def submit_action(self, action: str, text: str | None = None,
+                      override=None) -> None:
+        """Called from the web layer when the user clicks pause/stop/correct/edit."""
         a = ControlAction(action)
         if a == ControlAction.PAUSE:
             self.paused.set()
@@ -46,7 +47,7 @@ class SessionHandle:
             if a == ControlAction.CONTINUE:
                 self.paused.clear()
                 self.status = "running"
-            self._control.put(ControlDecision(a, correction=text))
+            self._control.put(ControlDecision(a, correction=text, override=override))
 
 
 class QueueController(SessionController):

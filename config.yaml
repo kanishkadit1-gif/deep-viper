@@ -46,7 +46,9 @@ planning:
 
 logging:
   runs_dir: "runs"
-  save_all_iterations: true
+  # Per-stage PNGs are no longer needed by the UI (it draws an SVG overlay from
+  # the event geometry). Keep false for fast sessions; set true only to debug.
+  save_all_iterations: false
 
 langsmith:
   project_name: "deep-viper-v2"

@@ -235,7 +235,7 @@ async def session_action(sid: str, body: dict):
     h = SESSIONS.get(sid)
     if not h:
         return JSONResponse({"error": "unknown session"}, status_code=404)
-    h.submit_action(body.get("action", "continue"), body.get("text"))
+    h.submit_action(body.get("action", "continue"), body.get("text"), body.get("override"))
     return {"ok": True, "status": h.status}
 
 
@@ -263,7 +263,7 @@ async def session_ws(ws: WebSocket, sid: str):
         try:
             while True:
                 msg = await ws.receive_json()
-                h.submit_action(msg.get("action", "continue"), msg.get("text"))
+                h.submit_action(msg.get("action", "continue"), msg.get("text"), msg.get("override"))
         except WebSocketDisconnect:
             pass
 
