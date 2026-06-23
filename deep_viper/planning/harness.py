@@ -10,7 +10,7 @@ from deep_viper.config import Config
 from deep_viper.scene.state import SceneState, SceneObject
 from deep_viper.memory.causal import CausalMemory
 from deep_viper.domain import SubTask
-from deep_viper.pipeline import KinematicsStage
+from deep_viper.pipeline import KinematicsStage, Renderer
 from deep_viper.planning.task_planner import plan_tasks
 from deep_viper.planning.plan_validator import validate_and_expand
 from deep_viper.planning.trajectory_agent import run_trajectory, TrajectoryState
@@ -200,7 +200,7 @@ def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
 
 def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str | None = None,
                 controller: SessionController | None = None) -> None:
-    from deep_viper.scene.renderer import save_causal_memory_viz, save_session_gif, load_scene_image
+    from deep_viper.scene.renderer import save_causal_memory_viz, load_scene_image
 
     ctl = controller or NoOpController()
     run_dir = Path(cfg.logging.runs_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -343,8 +343,8 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     save_causal_memory_viz(base_img, memory, run_dir / "causal_memory.png")
     print(f"[Memory] Causal memory visualization saved.")
 
-    # Session GIF
-    save_session_gif(scene, committed_paths, initial_arm_pos, run_dir / "session.gif")
+    # Session GIF (2D animated playback)
+    Renderer().render_gif(scene, committed_paths, initial_arm_pos, run_dir / "session.gif")
     print(f"[GIF] Session animation saved.")
 
     # Persist user corrections so future sessions honor them.

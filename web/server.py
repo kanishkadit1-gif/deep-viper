@@ -303,30 +303,26 @@ async def render_video(sid: str):
         return JSONResponse({"error": "no completed run to render"}, status_code=400)
 
     def _render():
-        from deep_viper.scene.blender_renderer import render_session_video
+        from deep_viper.pipeline import Renderer
+        from deep_viper.domain import JointTrajectory, JointFrame
+        from deep_viper.planning.harness import load_scene
         try:
             log = json.loads((Path(h.run_dir) / "run_log.json").read_text())
             ds = json.loads(Path(h.dataset_path).read_text())
-            jt = log.get("joint_trajectory")
-            if not jt:
+            jt_raw = log.get("joint_trajectory")
+            if not jt_raw:
                 h.events.put(Event(EventType.INFO, "No joint trajectory to render.", {}))
                 return
+            scene = load_scene(h.dataset_path)
+            jt = JointTrajectory(frames=[JointFrame(**f) for f in jt_raw])
             box_name_by_id = {o["id"]: f"Box_{o['id']}_{o['color']}" for o in ds["objects"]}
-            table_z = ds.get("table_z", 0.75)
-            arm_base = [0.0, -(0.8 / 2 + 0.12), table_z]
             h.events.put(Event(EventType.RENDER_PROGRESS,
                                f"Rendering {len(jt)} frames in Blender…", {"frames": len(jt)}))
-            res = render_session_video(
-                scene_blend=str(Path(h.blend_path).resolve()),
-                joint_trajectory=jt, box_name_by_id=box_name_by_id,
-                arm_base=arm_base, table_z=table_z,
-                assets_dir=str(REPO / "data" / "blender" / "assets"),
-                out_dir=h.run_dir, samples=128, resolution=(1280, 720), fps=24,
-            )
+            res = Renderer().render_video(scene, jt, h.blend_path, Path(h.run_dir),
+                                          box_name_by_id)
             if res.get("video"):
                 h.events.put(Event(EventType.SESSION_DONE, "Video ready",
-                                   {"video": res["video"], "n_frames": res["n_frames"]},
-                                   image_path=None))
+                                   {"video": res["video"], "n_frames": res["n_frames"]}))
             else:
                 h.events.put(Event(EventType.INFO, "Render finished but no video produced.", {}))
         except Exception as e:

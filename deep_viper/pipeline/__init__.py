@@ -13,5 +13,6 @@ Stages import only from domain (L1) and primitives (L0). They never import
 session or drivers (L3/L4).
 """
 from deep_viper.pipeline.kinematics import KinematicsStage
+from deep_viper.pipeline.rendering import Renderer
 
-__all__ = ["KinematicsStage"]
+__all__ = ["KinematicsStage", "Renderer"]
