@@ -71,12 +71,9 @@ export async function getSessionEvents(sid) {
   return r.json();
 }
 
-// Trigger the optional Blender video render. quality: "preview" | "full".
-export async function renderVideo(sid, quality = "full") {
-  const r = await fetch(`/api/session/${sid}/render_video`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ quality }),
-  });
+// Trigger the optional Blender (EEVEE) robot-arm video render.
+export async function renderVideo(sid) {
+  const r = await fetch(`/api/session/${sid}/render_video`, { method: "POST" });
   return r.json();
 }
 

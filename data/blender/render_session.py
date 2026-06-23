@@ -161,20 +161,39 @@ def main():
     scene = bpy.context.scene
     base_mat = Matrix.Translation(Vector(cfg["arm_base"]))
 
-    # Render settings (reuse blend's camera/lighting; just set engine/samples/GPU)
-    scene.render.engine = "CYCLES"
-    scene.cycles.samples = cfg.get("samples", 128)
-    scene.cycles.use_denoising = True
-    try:
-        scene.cycles.device = "GPU"
-        prefs = bpy.context.preferences.addons["cycles"].preferences
-        prefs.compute_device_type = "CUDA"
-        for d in prefs.devices:
-            d.use = True
-        print("  [Render] GPU (CUDA)")
-    except Exception as e:
-        scene.cycles.device = "CPU"
-        print(f"  [Render] CPU ({e})")
+    # Render settings (reuse blend's camera/lighting; just set engine/samples).
+    # EEVEE = fast rasterizer for motion previews (no ray-traced shadows/
+    # reflections, by request). Cycles = the accurate hero render.
+    engine = cfg.get("engine", "CYCLES").upper()
+    if engine == "EEVEE":
+        scene.render.engine = "BLENDER_EEVEE"
+        ev = scene.eevee
+        ev.taa_render_samples = cfg.get("samples", 16)
+        ev.use_gtao = False              # no ambient occlusion
+        ev.use_bloom = False
+        ev.use_ssr = False               # no screen-space reflections
+        ev.use_soft_shadows = False
+        ev.use_shadow_high_bitdepth = False
+        # Turn off shadows on every light.
+        for obj in bpy.data.objects:
+            if obj.type == "LIGHT":
+                obj.data.use_shadow = False
+        print(f"  [Render] EEVEE (fast, no shadows/reflections) "
+              f"{ev.taa_render_samples} samples")
+    else:
+        scene.render.engine = "CYCLES"
+        scene.cycles.samples = cfg.get("samples", 128)
+        scene.cycles.use_denoising = True
+        try:
+            scene.cycles.device = "GPU"
+            prefs = bpy.context.preferences.addons["cycles"].preferences
+            prefs.compute_device_type = "CUDA"
+            for d in prefs.devices:
+                d.use = True
+            print("  [Render] Cycles GPU (CUDA)")
+        except Exception as e:
+            scene.cycles.device = "CPU"
+            print(f"  [Render] Cycles CPU ({e})")
     W, H = cfg.get("resolution", [1280, 720])
     scene.render.resolution_x = W
     scene.render.resolution_y = H

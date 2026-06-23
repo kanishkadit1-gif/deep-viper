@@ -234,16 +234,10 @@ function RenderControls({ hasBlend, prog, onRender, onCancel }) {
     <div className="text-xs text-viper-muted flex items-center gap-3">
       <span>Animated trajectory playback.</span>
       {hasBlend && (
-        <>
-          <button onClick={() => onRender("full")}
-            className="rounded-lg bg-viper-accent hover:bg-indigo-500 text-white px-3 py-1.5 font-medium">
-            🎬 Render video <span className="opacity-70">(full · 128 spp)</span>
-          </button>
-          <button onClick={() => onRender("preview")}
-            className="rounded-lg bg-viper-panel2 border border-viper-border hover:border-viper-muted px-3 py-1.5">
-            ⚡ Quick preview <span className="opacity-70">(32 spp)</span>
-          </button>
-        </>
+        <button onClick={() => onRender()}
+          className="rounded-lg bg-viper-accent hover:bg-indigo-500 text-white px-3 py-1.5 font-medium">
+          🎬 Render robot-arm video
+        </button>
       )}
       {prog?.cancelled && <span className="text-viper-bad">render cancelled</span>}
     </div>

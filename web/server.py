@@ -345,7 +345,7 @@ async def session_action(sid: str, body: dict):
 
 
 @app.post("/api/session/{sid}/render_video")
-async def render_video(sid: str, body: dict | None = None):
+async def render_video(sid: str):
     """
     Optional, user-triggered Phase-4 render -> Blender arm video. Streams
     RENDER_PROGRESS events (done/total), is interruptible, and supports a
@@ -360,13 +360,8 @@ async def render_video(sid: str, body: dict | None = None):
     if not h.run_dir or not (Path(h.run_dir) / "run_log.json").exists():
         return JSONResponse({"error": "no completed run to render"}, status_code=400)
 
-    samples = int((body or {}).get("samples", 128))
-    res_map = {"preview": (32, (960, 540)), "full": (128, (1280, 720))}
-    quality = (body or {}).get("quality")
-    if quality in res_map:
-        samples, resolution = res_map[quality]
-    else:
-        resolution = (1280, 720)
+    # EEVEE rasterizer: fast, no ray-traced shadows/reflections (by design).
+    samples, resolution, engine = 64, (1280, 720), "EEVEE"
     h.render_cancel.clear()
 
     def _render():
@@ -397,7 +392,7 @@ async def render_video(sid: str, body: dict | None = None):
 
             res = Renderer().render_video(
                 scene, jt, h.blend_path, Path(h.run_dir), box_name_by_id,
-                samples=samples, resolution=resolution,
+                samples=samples, resolution=resolution, engine=engine,
                 progress_cb=progress,
                 should_cancel=lambda: h.render_cancel.is_set(),
                 on_process=lambda p: setattr(h, "render_proc", p))

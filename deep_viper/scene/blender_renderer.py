@@ -32,6 +32,7 @@ def render_session_video(
     samples: int = 128,
     resolution: tuple[int, int] = (1280, 720),
     fps: int = 24,
+    engine: str = "CYCLES",  # "CYCLES" (hero) | "EEVEE" (fast preview, no shadows)
     encode: bool = True,
     progress_cb=None,        # called as progress_cb(done, total) while rendering
     should_cancel=None,      # called periodically; if it returns True, abort
@@ -59,6 +60,7 @@ def render_session_video(
         "frames_dir": str(frames_dir),
         "samples": samples,
         "resolution": list(resolution),
+        "engine": engine,
         "box_name_by_id": {str(k): v for k, v in box_name_by_id.items()},
     }
     traj_path = out_dir / "render_traj.json"

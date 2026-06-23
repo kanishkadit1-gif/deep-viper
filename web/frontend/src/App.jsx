@@ -87,8 +87,8 @@ export default function App() {
     if (wsRef.current) wsRef.current.send(JSON.stringify({ action: "override", override: waypoints }));
   }
 
-  async function generateVideo(quality = "full") {
-    if (active?.sessionId) { openWs(active); await renderVideo(active.sessionId, quality); }
+  async function generateVideo() {
+    if (active?.sessionId) { openWs(active); await renderVideo(active.sessionId); }
   }
 
   async function stopRender() {
