@@ -1,7 +1,7 @@
 # Deep VIPER v2 — System Specification
 **Version:** 6.0
 **Date:** 2026-06-23
-**Status:** Modular pipeline re-architecture + multi-turn sessions (in progress)
+**Status:** Modular pipeline LANDED (L1 domain + L2 stages, harness orchestrates them); Pipeline façade + multi-turn sessions PENDING
 **Previous versions:** spec_v5.0.md, spec_v4.3.md, spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
 
 ---
@@ -59,6 +59,27 @@ resolved by one `SessionStore.get(sid)` (the v5.x web/server had 6 ad-hoc
 The `SessionController` event/control contract (v5.0) is retained and becomes the
 seam between L3 (session) and L2 (pipeline): stages emit events + honor control
 through the controller; NoOp = headless. This is what keeps stages driver-agnostic.
+
+### Implementation status (v6.0)
+**Landed & verified (CLI + a full session green):**
+- L1 `deep_viper/domain/`: `Plan`, `SubTask`, `Waypoints`, `CommittedPath`,
+  `JointFrame`, `JointTrajectory`. Lean (fields + only the serialization actually used).
+- L2 `deep_viper/pipeline/`: `TrajectoryPlanner.plan_move` (routing → `Waypoints`),
+  `KinematicsStage.solve` (pure, headless), `Renderer.render_gif/render_video`
+  (headless). KinematicsStage + Renderer proven callable standalone on real data.
+- `harness.execute_subtask` orchestrates the stages over `CommittedPath` objects;
+  no direct `run_trajectory`/dict-juggling. `web/server` render routes through `Renderer`.
+- One session resolver in web/server (`live_session` vs `resolve_session`).
+
+**Pending (next focused pass):**
+- TaskPlanner stage (wrap `plan_tasks`) + top-level `Pipeline.from_goal()` /
+  `execute_plan()` façade — the whole-pipeline-from-goal headless callable.
+- Multi-turn `Session` + `SessionStore`: persist world_state + transcript;
+  reopened == live; planner sees prior turns. (run_session still single-turn.)
+- Then delete any remaining single-turn monolith paths.
+
+**Dev discipline in force:** no back-compat shims / speculative helpers; move-and-
+delete; keep useful standalone utilities (make_gif.py, generate_dataset.py).
 
 ---
 
