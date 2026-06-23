@@ -9,11 +9,10 @@ from langchain_openai import ChatOpenAI
 from deep_viper.config import Config
 from deep_viper.scene.state import SceneState, SceneObject
 from deep_viper.memory.causal import CausalMemory
-from deep_viper.domain import SubTask
-from deep_viper.pipeline import KinematicsStage, Renderer
+from deep_viper.domain import SubTask, CommittedPath
+from deep_viper.pipeline import TrajectoryPlanner, KinematicsStage, Renderer
 from deep_viper.planning.task_planner import plan_tasks
 from deep_viper.planning.plan_validator import validate_and_expand
-from deep_viper.planning.trajectory_agent import run_trajectory, TrajectoryState
 from deep_viper.vlm.client import build_llm
 from deep_viper.session.events import (
     SessionController, NoOpController, EventType, ControlAction,
@@ -120,79 +119,53 @@ def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
         print(f"  ERROR: unknown op '{op}'")
         return False, None
 
-    arm_start = scene.arm_pos[:]
     carrying_label = f"T{scene.carried_object_id}" if scene.carried_object_id is not None else None
 
-    final_state = run_trajectory(
-        scene_state=scene,
-        goal_pos=goal_pos,
-        obstacles=obstacles,
-        causal_memory=memory,
-        cfg=cfg.planning,
-        llm=llm,
-        run_dir=run_dir,
-        subtask_label=label,
-        save_iterations=cfg.logging.save_all_iterations,
-        controller=ctl,
-    )
-
-    if final_state.status == "aborted":
-        print(f"\n[ABORT] Sub-task {subtask.step} failed after {cfg.planning.max_iterations} iterations.")
-        print(f"  Best score achieved: {final_state.best_score:.3f}")
+    # Route the move via the TrajectoryPlanner stage -> typed Waypoints.
+    wp = TrajectoryPlanner(cfg.planning, llm).plan_move(
+        scene, goal_pos, obstacles, memory, run_dir, label, controller=ctl)
+    if wp is None:
+        print(f"\n[ABORT] Sub-task {subtask.step} — no feasible path.")
         return False, None
 
-    # Snapshot object positions at the start of this move (for GIF background)
-    obj_snapshot = [
-        {"id": o.id, "label": o.label, "center": o.center[:], "bbox": o.bbox[:]}
-        for o in scene.objects
-    ]
-
-    # Collect committed path for GIF
-    committed = {
-        "arm_start": arm_start,
-        "waypoints": final_state.best_trajectory,
-        "goal_pos": goal_pos,
-        "subtask_label": label,
-        "carrying_label": carrying_label,
-        "target_id": target_id,          # box this segment picks (empty) or carries
-        "best_score": round(final_state.best_score, 4),
-        "obj_snapshot": obj_snapshot,
-        "carried_id": scene.carried_object_id,
-    }
-    # For Blender scenes, also resolve the pixel waypoints to 3D table-plane coords.
-    # This is the artifact consumed by the future IK -> joint -> video stage.
+    # Assemble the committed path (domain object). The arm has advanced; snapshot
+    # object positions for the GIF background.
+    committed = CommittedPath(
+        arm_start=wp.arm_start, waypoints=wp.points, goal_pos=goal_pos,
+        subtask_label=label, target_id=target_id, carrying_label=carrying_label,
+        carried_id=scene.carried_object_id, best_score=wp.risk,
+        obj_snapshot=[{"id": o.id, "label": o.label, "center": o.center[:],
+                       "bbox": o.bbox[:]} for o in scene.objects],
+    )
     if scene.is_3d:
         from deep_viper.planning.projection import unproject_committed_path
-        unproject_committed_path(committed, scene.camera, scene.table_z)
-        n3d = sum(1 for p in committed.get("waypoints_3d", []) if p is not None)
-        print(f"  [3D] Unprojected {n3d}/{len(committed['waypoints'])} waypoints to table plane (z={scene.table_z}m)")
+        d = committed.to_dict()
+        unproject_committed_path(d, scene.camera, scene.table_z)
+        committed.waypoints_3d = d.get("waypoints_3d")
+        committed.arm_start_3d = d.get("arm_start_3d")
+        committed.goal_pos_3d = d.get("goal_pos_3d")
+        n3d = sum(1 for p in (committed.waypoints_3d or []) if p is not None)
+        print(f"  [3D] Unprojected {n3d}/{len(committed.waypoints)} waypoints (z={scene.table_z}m)")
     committed_paths.append(committed)
 
     committed_img = run_dir / f"{label}_committed.png"
-    ctl.event(EventType.PATH_COMMITTED,
-              f"{label}: committed ({final_state.best_metrics or {}})",
+    ctl.event(EventType.PATH_COMMITTED, f"{label}: committed",
               image_path=str(committed_img) if committed_img.exists() else None,
-              step=subtask.step, label=label,
-              waypoints=committed["waypoints"],
-              metrics=final_state.best_metrics, risk=round(final_state.best_score, 4))
+              step=subtask.step, label=label, waypoints=wp.points,
+              metrics={"num_waypoints": wp.num_waypoints, "length_px": wp.length_px},
+              risk=wp.risk)
 
     mem_metrics = memory.metrics([f"obj_{o.id}" for o in obstacles])
-    n_iters = final_state.explore_iter + final_state.refine_iter + 1
+    n_iters = wp.explore_iters + wp.refine_iters + 1
     step_metrics = {
-        "step": subtask.step,
-        "op": op,
-        "type": "trajectory",
-        "first_call_success": final_state.first_call_success,
-        "retry_count": final_state.retry_count,
-        "best_score": round(final_state.best_score, 4),
-        "num_obstacles": len(obstacles),
+        "step": subtask.step, "op": op, "type": "trajectory",
+        "first_call_success": wp.first_call_success,
+        "retry_count": wp.explore_iters + wp.refine_iters,
+        "best_score": wp.risk, "num_obstacles": len(obstacles),
         "memory_hit_rate": round(mem_metrics["memory_hit_rate"], 3),
-        # Two-phase loop telemetry
-        "explore_iters": final_state.explore_iter,
-        "refine_iters": final_state.refine_iter,
-        "final_waypoints": (final_state.best_metrics or {}).get("num_waypoints"),
-        "final_length_px": (final_state.best_metrics or {}).get("length_px"),
-        "opt_trace": final_state.opt_trace,
+        "explore_iters": wp.explore_iters, "refine_iters": wp.refine_iters,
+        "final_waypoints": wp.num_waypoints, "final_length_px": wp.length_px,
+        "opt_trace": wp.opt_trace,
         "vlm_calls": 1 + n_iters * (1 + cfg.planning.num_trajectories),
     }
     return True, step_metrics
@@ -387,7 +360,7 @@ def _save_log(run_dir: Path, goal: str, subtasks: list, metrics: list,
                      for s in subtasks],
         "validator_decisions": [_conflict_to_dict(c) for c in conflict_log],
         "metrics": metrics,
-        "committed_paths": committed_paths or [],
+        "committed_paths": [c.to_dict() for c in (committed_paths or [])],
         "session_summary": session_summary,
         "aborted_at_step": aborted_at,
     }

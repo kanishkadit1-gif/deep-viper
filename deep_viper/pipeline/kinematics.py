@@ -41,7 +41,6 @@ class KinematicsStage:
                 return obj.size_3d[2]
             return _DEFAULT_BOX_HEIGHT
 
-        cp_dicts = [c.to_dict() if isinstance(c, CommittedPath) else c
-                    for c in committed_paths]
+        cp_dicts = [c.to_dict() for c in committed_paths]
         frames = build_joint_trajectory(cp_dicts, table_z, arm_base, box_height)
         return JointTrajectory(frames=[JointFrame(**f) for f in frames])

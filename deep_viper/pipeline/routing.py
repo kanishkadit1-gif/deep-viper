@@ -50,5 +50,8 @@ class TrajectoryPlanner:
             points=state.best_trajectory, arm_start=arm_start, goal=goal_pos,
             risk=round(state.best_score, 4),
             num_waypoints=m.get("num_waypoints", len(state.best_trajectory)),
-            length_px=m.get("length_px", 0.0),
+            length_px=m.get("length_px", 0.0), min_clearance=m.get("min_clearance"),
+            first_call_success=state.first_call_success,
+            explore_iters=state.explore_iter, refine_iters=state.refine_iter,
+            opt_trace=state.opt_trace,
         )

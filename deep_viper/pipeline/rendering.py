@@ -25,9 +25,8 @@ class Renderer:
 
     def render_gif(self, scene: SceneState, committed_paths: list[CommittedPath],
                    initial_arm_pos: list[int], out_path: Path) -> Path:
-        cp_dicts = [c.to_dict() if isinstance(c, CommittedPath) else c
-                    for c in committed_paths]
-        save_session_gif(scene, cp_dicts, initial_arm_pos, out_path)
+        save_session_gif(scene, [c.to_dict() for c in committed_paths],
+                         initial_arm_pos, out_path)
         return out_path
 
     def render_video(self, scene: SceneState, joint_trajectory: JointTrajectory,

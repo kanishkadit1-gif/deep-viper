@@ -9,14 +9,19 @@ Point3D = list  # [float, float, float] world meters
 
 @dataclass
 class Waypoints:
-    """A planned path for one move: pixel waypoints + optional 3D + metrics."""
+    """A planned path for one move: pixel waypoints + metrics + routing telemetry."""
     points: list[Pixel] = field(default_factory=list)   # excludes the arm start
     arm_start: Pixel = field(default_factory=list)
     goal: Pixel = field(default_factory=list)
-    points_3d: list[Point3D] | None = None
     risk: float = 0.0
     num_waypoints: int = 0
     length_px: float = 0.0
+    min_clearance: float | None = None
+    # routing telemetry (explore/refine loop) — for logs/metrics, not the path
+    first_call_success: bool = False
+    explore_iters: int = 0
+    refine_iters: int = 0
+    opt_trace: list = field(default_factory=list)
 
 
 @dataclass
