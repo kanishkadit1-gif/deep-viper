@@ -69,13 +69,30 @@ def resolve_session(sid: str) -> SessionHandle | None:
     h.goal = rec.get("goal", "")
     h.status = rec.get("status", "done")
     h.dataset_path = rec.get("dataset_path", "")
-    h.blend_path = rec.get("blend_path", "")
-    h.run_dir = rec.get("run_dir", "")
     h.vlm = rec.get("vlm")
     h.history = rec.get("events", [])
     h._record = rec   # stash for lazy Session rehydration on first new turn
+    # Derive blend_path from the dataset and run_dir from the events when the
+    # persisted top-level fields are absent (so render works for any vintage).
+    h.blend_path = rec.get("blend_path") or _blend_from_dataset(h.dataset_path)
+    h.run_dir = rec.get("run_dir") or _last_run_dir_from_events(h.history)
     SESSIONS[sid] = h   # register so WS / render can attach
     return h
+
+
+def _blend_from_dataset(dataset_path: str) -> str:
+    try:
+        return json.loads(Path(dataset_path).read_text()).get("blend_path", "")
+    except Exception:
+        return ""
+
+
+def _last_run_dir_from_events(events: list) -> str:
+    for e in reversed(events or []):
+        rd = (e.get("payload") or {}).get("run_dir")
+        if rd:
+            return rd
+    return ""
 
 
 def _rehydrate_live_session(h: SessionHandle) -> None:
