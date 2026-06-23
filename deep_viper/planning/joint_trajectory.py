@@ -24,11 +24,7 @@ import numpy as np
 from deep_viper.planning.ik_solver import (
     solve_ik, interpolate_joints, PANDA_HOME_JOINTS,
 )
-
-
-# Vertical profile (meters, world Z relative to table surface)
-CARRY_CLEARANCE = 0.22    # height above table the arm travels/carries at
-GRASP_CLEARANCE = 0.02    # gripper tip height above the box top when grasping
+from deep_viper.planning.motion import CARRY_CLEARANCE, GRASP_CLEARANCE  # shared
 
 # Frame budget per motion primitive (at the render fps)
 FRAMES_TRAVERSE_PER_SEG = 18   # per XY arrow segment
@@ -42,18 +38,24 @@ def _xyz(table_xy_point, z):
 
 
 def build_joint_trajectory(committed_paths: list[dict], table_z: float,
-                           arm_base_matrix, box_height_lookup) -> list[dict]:
+                           arm_base_matrix, box_height_lookup,
+                           q_start: list[float] | None = None
+                           ) -> tuple[list[dict], list[float]]:
     """
     committed_paths : list of committed-path dicts (each has waypoints_3d, etc.)
     table_z         : world Z of table surface
     arm_base_matrix : 4x4 base transform for the arm (numpy or list)
     box_height_lookup : callable(carried_id) -> box height (m), for grasp depth
+    q_start         : initial joint pose to start from. None -> home pose. Pass the
+                      previous move's final pose to chain moves without snapping
+                      back to home between them.
 
-    Returns a flat list of frame dicts.
+    Returns (frames, q_final) — the flat frame list and the ending joint pose, so
+    the caller can seed the next move from q_final.
     """
     carry_z = table_z + CARRY_CLEARANCE
     frames: list[dict] = []
-    q_prev = list(PANDA_HOME_JOINTS)
+    q_prev = list(q_start) if q_start is not None else list(PANDA_HOME_JOINTS)
     attached = None
 
     def ik(xyz, seed):
@@ -117,4 +119,4 @@ def build_joint_trajectory(committed_paths: list[dict], table_z: float,
             push_interp(q_down, q_lift, FRAMES_VERTICAL, gripper=1, attach=attached)
             q_prev = q_lift
 
-    return frames
+    return frames, q_prev

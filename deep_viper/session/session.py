@@ -45,7 +45,8 @@ class TurnResult:
 class Session:
     def __init__(self, cfg: Config, scene: SceneState, dataset_path: str,
                  blend_path: str = "", memory: CausalMemory | None = None,
-                 transcript: list[TurnRecord] | None = None, llm=None):
+                 transcript: list[TurnRecord] | None = None, llm=None,
+                 conflict_default: str | None = None):
         from deep_viper.vlm.client import build_llm
         self.cfg = cfg
         self.scene = scene
@@ -55,6 +56,10 @@ class Session:
         self.transcript: list[TurnRecord] = transcript or []
         self.llm = llm or build_llm(cfg.vlm)
         self.last_run_dir: Path | None = None
+        # Session-level placement-conflict preference: "s" stacks, otherwise the
+        # blocker is cleared to free space first. Resolved automatically per turn
+        # (no terminal/web prompt); surfaced in the plan card as auto-resolved.
+        self.conflict_default = conflict_default
 
     # ---- transcript context fed to the planner -------------------------- #
     def _history_text(self) -> str:
@@ -79,19 +84,24 @@ class Session:
         # --- plan gate (blocking; relays the planner's own reason) ---
         planner = TaskPlanner(self.llm)
         history = self._history_text()
+        # Chess scenes: rewrite any board squares in the goal to pixels up front.
+        # No-op for box scenes (no board_frame). Keeps the planner pixel-only.
+        from deep_viper.planning.board_coords import translate_goal
+        planner_goal = translate_goal(goal, self.scene)
         plan_hint = ""
         while True:
-            g = goal
+            g = planner_goal
             if history:
                 g = f"{g}\n\n{history}"
             if plan_hint:
                 g = f"{g}\n\nUSER REFINEMENT (follow exactly): {plan_hint}"
-            plan = planner.plan(g, self.scene, conflict_default=None)
+            plan = planner.plan(g, self.scene, conflict_default=self.conflict_default)
             decision = ctl.checkpoint(
                 EventType.PLAN_PROPOSED,
                 f"Planned {len(plan)} step(s)." if plan.subtasks else "No steps produced.",
-                blocking=True, kind="plan_approval", plan=_plan_view(plan.subtasks),
-                reason=plan.reason, empty=plan.is_empty, num_conflicts=len(plan.conflict_log))
+                blocking=True, kind="plan_approval", plan=_plan_view(plan.subtasks, self.scene),
+                reason=plan.reason, empty=plan.is_empty,
+                conflicts=[c.summary for c in plan.conflict_log if c.summary])
             if decision.stop:
                 ctl.event(EventType.SESSION_ABORTED, "Cancelled by user.", step=0)
                 self.transcript.append(TurnRecord(goal, "cancelled by user", aborted=True))
@@ -159,8 +169,15 @@ class Session:
             p.write_text(json.dumps(snap, indent=2))
 
 
-def _plan_view(subtasks) -> list[dict]:
+def _plan_view(subtasks, scene=None) -> list[dict]:
+    def label_for(s):
+        tid = s.args.get("target_id") if isinstance(s.args, dict) else None
+        if scene is None or tid is None:
+            return None
+        obj = scene.get_object(tid)
+        return obj.label if obj else None
     return [{"step": s.step, "op": s.op, "args": s.args,
+             **({"label": lbl} if (lbl := label_for(s)) else {}),
              **({"stack_onto": s.stack_onto} if s.stack_onto else {})}
             for s in subtasks]
 

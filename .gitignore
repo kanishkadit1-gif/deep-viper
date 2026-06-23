@@ -51,3 +51,14 @@ web/frontend/.vite/
 # --- Temp ---
 *.tmp
 /tmp/
+
+# --- Teammate's chess system: ignore its markdown/docs (their repo owns them) ---
+chess/**/*.md
+chess/*.md
+
+# --- Runtime-generated logs / exports (not source) ---
+log.txt
+chess/log.txt
+chat.md
+
+*.md

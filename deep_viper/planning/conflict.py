@@ -14,7 +14,8 @@ class ConflictRecord:
     target_id: int
     blocker_id: int
     destination: list[int]
-    user_choice: str | None = None    # "s" or "p" (full overlap only)
+    resolution: str = ""      # "stack" | "clear" — how it was auto-resolved
+    summary: str = ""         # one-line human description for the plan card
     inserted_steps: list[int] = field(default_factory=list)
 
 

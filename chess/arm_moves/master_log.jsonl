@@ -1,0 +1,5 @@
+{"ply": 1, "player": "A", "move": "e2:e4"}
+{"ply": 2, "player": "B", "move": "d7:d5"}
+{"ply": 3, "player": "A", "move": "e4:d5"}
+{"ply": 4, "player": "B", "move": "d8:d5"}
+{"ply": 5, "player": "A", "move": "b1:c3"}

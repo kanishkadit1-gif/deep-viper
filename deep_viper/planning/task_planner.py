@@ -11,7 +11,8 @@ from deep_viper.domain import SubTask, Plan
 
 def plan_tasks(goal: str, state: SceneState, llm: ChatOpenAI) -> tuple[list[SubTask], str]:
     objects = [
-        {"id": o.id, "label": o.label, "center": o.center, "bbox": o.bbox}
+        {"id": o.id, "label": o.label, "center": o.center, "bbox": o.bbox,
+         "history": o.history}
         for o in state.objects
     ]
 

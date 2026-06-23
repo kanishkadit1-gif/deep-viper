@@ -59,6 +59,7 @@ def load_scene(dataset_path: str) -> SceneState:
         camera=camera,
         table_z=table_z,
         workspace_markers=data.get("workspace_markers"),
+        board_frame=data.get("board_frame"),
     )
 
 

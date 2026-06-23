@@ -107,7 +107,8 @@ def _rehydrate_live_session(h: SessionHandle) -> None:
         scene.apply_world_state(rec["world_state"])
     transcript = [TurnRecord(**t) for t in rec.get("transcript", [])]
     h.session = Session(cfg, scene, h.dataset_path,
-                        blend_path=h.blend_path, transcript=transcript)
+                        blend_path=h.blend_path, transcript=transcript,
+                        conflict_default=rec.get("conflict_default"))
     h.session.load_corrections()
 
 
@@ -224,6 +225,7 @@ async def start_session(body: dict):
     goal = (body.get("goal") or "").strip()
     dataset_path = body.get("dataset_path")
     vlm = body.get("vlm")  # profile name or None
+    conflict_default = body.get("conflict_default")  # "s" stack | else clear blocker
     if not goal or not dataset_path:
         return JSONResponse({"error": "goal and dataset_path required"}, status_code=400)
 
@@ -244,7 +246,8 @@ async def start_session(body: dict):
     from deep_viper.session.session import Session
     from deep_viper.planning.harness import load_scene
     scene = load_scene(dataset_path)
-    handle.session = Session(cfg, scene, dataset_path, blend_path=handle.blend_path)
+    handle.session = Session(cfg, scene, dataset_path, blend_path=handle.blend_path,
+                             conflict_default=conflict_default)
     handle.session.load_corrections()
 
     _launch_turn(sid, goal)
@@ -289,6 +292,7 @@ def _persist_session(sid, handle):
         if sess is not None:
             rec["world_state"] = sess.scene.world_state()
             rec["transcript"] = [t.__dict__ for t in sess.transcript]
+            rec["conflict_default"] = sess.conflict_default
         (SESSIONS_STORE / f"{sid}.json").write_text(json.dumps(rec, indent=2))
     except Exception:
         pass

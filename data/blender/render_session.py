@@ -30,6 +30,11 @@ import math
 from pathlib import Path
 from mathutils import Vector, Matrix
 
+# Max vertical "settle" allowed when a piece is released (drop its base flush to
+# the board). Only a small correction — never a teleport. Larger gaps mean the IK
+# place-target was wrong and should be fixed there, not masked here.
+SETTLE_MAX = 0.03   # meters
+
 
 PANDA_JOINT_TRANSFORMS = [
     {"xyz": (0,       0,      0.333), "rpy": (0,          0, 0)},
@@ -156,6 +161,46 @@ def pose_arm(link_empties, joints, base_mat):
         e.matrix_world = frames[i]
 
 
+def _setup_render_camera(scene, cfg):
+    """
+    Position the VIDEO camera. Default is a seated 'player's-side' 3/4 view that
+    looks across the board toward the arm — far more readable than the flat
+    top-down plan view. Set cfg['render_view']='topdown' to keep the blend cam.
+    Only affects the rendered frames; the dataset's calibrated camera is untouched.
+    """
+    view = cfg.get("render_view", "player")
+    if view == "topdown":
+        return  # keep the blend file's existing (top-down) camera
+
+    table_z = cfg.get("table_z", 0.75)
+    arm_y = cfg.get("arm_base", [0, -0.52, table_z])[1]   # arm sits at this -Y (near edge)
+    board_far_y = 0.24                                     # +Y far edge of the board
+    # Aim at the board surface toward the arm — a stronger downward look so the
+    # whole board reads clearly, while still facing the arm across the board.
+    target = Vector((0.0, arm_y + 0.22, table_z - 0.02))
+
+    cam = scene.camera
+    if cam is None:
+        cam_data = bpy.data.cameras.new("RenderCam")
+        cam = bpy.data.objects.new("RenderCam", cam_data)
+        scene.collection.objects.link(cam)
+        scene.camera = cam
+
+    # Seated DIRECTLY in front of the black pieces (centered, X=0) on the far edge
+    # (+Y), lower and looking nearly straight across the board toward the arm.
+    cam.location = Vector((0.0, board_far_y + 0.46, table_z + 0.92))
+    direction = target - cam.location
+    cam.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+    cam.data.lens = 24           # wider FOV -> more of the board/foreground visible
+    # Vertical lens shift slides the frame DOWN (reveals more foreground) without
+    # moving or re-aiming the camera. Negative shift_y = show more below.
+    cam.data.shift_y = -0.12
+    cam.data.sensor_width = 36
+    cam.data.clip_start = 0.01
+    cam.data.clip_end = 50.0
+    print(f"  [Render] Camera = player's-side 3/4 view at {tuple(round(v,2) for v in cam.location)}")
+
+
 def main():
     cfg = parse_args()
     scene = bpy.context.scene
@@ -199,6 +244,11 @@ def main():
     scene.render.resolution_y = H
     scene.render.image_settings.file_format = "PNG"
 
+    # Render camera viewpoint. The DATASET camera stays top-down (planning depends
+    # on it), but the VIDEO looks better from a seated player's-side perspective.
+    # "player" = elevated 3/4 view across the board; "topdown" = reuse blend cam.
+    _setup_render_camera(scene, cfg)
+
     link_empties, gripper = build_reposable_arm(cfg, base_mat)
 
     # Resolve box objects by id
@@ -212,6 +262,9 @@ def main():
                     obj = o; break
         if obj is not None:
             box_by_id[int(sid)] = obj
+
+    # carried id -> final world [x,y] for settling pieces on detach
+    table_z = cfg.get("table_z", 0.75)
 
     frames_dir = Path(cfg["frames_dir"])
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -228,13 +281,34 @@ def main():
         attached = fr.get("attached_id")
         box = box_by_id.get(attached) if attached is not None else None
 
-        # On attach: record box pose relative to gripper
+        # On GRIP: rigidly bind the object to the gripper at its ACTUAL grasped
+        # pose (the gripper has already descended onto it via IK — no teleport).
+        # The frozen offset then carries the object through the WHOLE motion:
+        # descend -> grip -> lift -> traverse -> descend -> release. It physically
+        # moves down and up with the arm; nothing is snapped mid-air.
         if attached != prev_attached:
             if attached is not None and box is not None:
+                # Bind at the object's real current pose relative to the gripper as
+                # it grasps (gripper already lowered to grasp height by the IK).
                 box_grip_offset[attached] = gripper.matrix_world.inverted() @ box.matrix_world
+            elif prev_attached is not None:
+                # RELEASE: the arm has already lowered the object to the board via
+                # IK, so the object is at its carried resting pose. Allow only a
+                # TINY settle (drop the base flush onto the board, keep XY), never a
+                # teleport to the target — placement accuracy is the IK's job.
+                released = box_by_id.get(prev_attached)
+                if released is not None:
+                    wb = released.matrix_world
+                    base_z = min((wb @ Vector(c)).z for c in released.bound_box)
+                    settle_dz = table_z - base_z
+                    if abs(settle_dz) <= SETTLE_MAX:      # only a small settle
+                        released.matrix_world = Matrix.Translation(
+                            Vector((0, 0, settle_dz))) @ wb
+                box_grip_offset.pop(prev_attached, None)
             prev_attached = attached
 
-        # While attached, move the box with the gripper
+        # While attached, the object rides rigidly with the gripper (down, across,
+        # and back down) — genuine carry, no snap.
         if attached is not None and box is not None and attached in box_grip_offset:
             box.matrix_world = gripper.matrix_world @ box_grip_offset[attached]
 

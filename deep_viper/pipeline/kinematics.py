@@ -42,5 +42,10 @@ class KinematicsStage:
             return _DEFAULT_BOX_HEIGHT
 
         cp_dicts = [c.to_dict() for c in committed_paths]
-        frames = build_joint_trajectory(cp_dicts, table_z, arm_base, box_height)
+        # Seed from the arm's current joint pose so consecutive moves continue
+        # from where the arm ended (no snap-back to home); write the final pose
+        # back onto the scene for the next move to chain from.
+        frames, q_final = build_joint_trajectory(
+            cp_dicts, table_z, arm_base, box_height, q_start=scene.arm_joints)
+        scene.arm_joints = list(q_final)
         return JointTrajectory(frames=[JointFrame(**f) for f in frames])

@@ -29,6 +29,10 @@ def main():
     ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--preview", action="store_true",
                     help="fast low-quality preview (16 samples, 960x540)")
+    ap.add_argument("--engine", default="EEVEE", choices=["EEVEE", "CYCLES"],
+                    help="EEVEE (fast, no shadows/reflections) | CYCLES (hero)")
+    ap.add_argument("--render-view", default="player", choices=["player", "topdown"],
+                    help="player = seated 3/4 view across the board | topdown = blend cam")
     args = ap.parse_args()
 
     run_dir = Path(args.run)
@@ -41,8 +45,15 @@ def main():
         print("ERROR: run_log.json has no joint_trajectory (was this a 3D scene run?).")
         sys.exit(1)
 
-    # box id -> blend object name (Box_{id}_{color})
-    box_name_by_id = {o["id"]: f"Box_{o['id']}_{o['color']}" for o in dataset["objects"]}
+    # Map each object id -> its blend object-name PREFIX. Box scenes name meshes
+    # 'Box_{id}_{color}'; chess scenes name them 'Piece_{id}_...'. The renderer
+    # tolerates trailing suffixes, so a stable per-id prefix is enough to resolve
+    # the right mesh in either scene type.
+    is_chess = "board_frame" in dataset
+    if is_chess:
+        box_name_by_id = {o["id"]: f"Piece_{o['id']}_" for o in dataset["objects"]}
+    else:
+        box_name_by_id = {o["id"]: f"Box_{o['id']}_{o['color']}" for o in dataset["objects"]}
 
     table_z = dataset.get("table_z", 0.75)
     arm_base = [0.0, -(0.8 / 2 + 0.12), table_z]  # matches generate_scene.py
@@ -66,6 +77,8 @@ def main():
         samples=samples,
         resolution=res,
         fps=args.fps,
+        engine=args.engine,
+        render_view=args.render_view,
     )
     print(json.dumps(result, indent=2))
 

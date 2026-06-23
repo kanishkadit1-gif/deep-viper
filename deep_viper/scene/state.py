@@ -10,10 +10,18 @@ class SceneObject:
     center: list[int]        # [x, y]
     bbox: list[int]          # [x1, y1, x2, y2]
     area_px: int = 0
+    # Position history (px centers), oldest first. history[0] is the original
+    # location; history[-1] tracks the current center. Lets the planner resolve
+    # references like "where the blue box originally was" across turns.
+    history: list[list[int]] = field(default_factory=list)
     # Optional 3D fields (populated only for Blender-rendered scenes; None for 2D photos)
     position_3d: list[float] | None = None   # [x, y, z] world meters
     size_3d: list[float] | None = None       # [w, d, h] meters
     bbox_3d: list[float] | None = None        # [x1,y1,z1, x2,y2,z2] world meters
+
+    def __post_init__(self):
+        if not self.history:
+            self.history = [self.center[:]]
 
 
 @dataclass
@@ -23,10 +31,18 @@ class SceneState:
     objects: list[SceneObject]
     arm_pos: list[int]       # [x, y] current arm position
     carried_object_id: int | None = None   # object attached to arm
+    # Live arm joint configuration [q1..q7]. None = at the home pose. Updated by
+    # the kinematics stage after each move so consecutive moves START from where
+    # the arm actually ended (no snap-back to home between moves). Parallels arm_pos.
+    arm_joints: list[float] | None = None
     # Optional 3D context (populated only for Blender-rendered scenes)
     camera: dict | None = None      # {"K":..., "R":..., "t":...} OpenCV convention
     table_z: float | None = None    # world Z of the table surface (meters)
     workspace_markers: list | None = None   # pixel corners of the movable area
+    # Optional board coordinate frame (chess scenes): maps squares A1..H8 to
+    # pixel/world centers. Present only for board scenes; enables the chess
+    # goal-coordinate translator. None for box scenes (translator is a no-op).
+    board_frame: dict | None = None
 
     @property
     def is_3d(self) -> bool:
@@ -43,20 +59,25 @@ class SceneState:
         """Serializable mutable state — what changes as turns execute."""
         return {
             "arm_pos": self.arm_pos[:],
+            "arm_joints": (self.arm_joints[:] if self.arm_joints is not None else None),
             "carried_object_id": self.carried_object_id,
-            "objects": {o.id: {"center": o.center[:], "bbox": o.bbox[:]}
+            "objects": {o.id: {"center": o.center[:], "bbox": o.bbox[:],
+                                "history": [p[:] for p in o.history]}
                         for o in self.objects},
         }
 
     def apply_world_state(self, ws: dict) -> None:
         """Restore mutable state from a prior turn (reopened session continuity)."""
         self.arm_pos = ws["arm_pos"][:]
+        self.arm_joints = (ws.get("arm_joints")[:] if ws.get("arm_joints") else None)
         self.carried_object_id = ws.get("carried_object_id")
         for o in self.objects:
             saved = ws.get("objects", {}).get(o.id) or ws.get("objects", {}).get(str(o.id))
             if saved:
                 o.center = saved["center"][:]
                 o.bbox = saved["bbox"][:]
+                if saved.get("history"):
+                    o.history = [p[:] for p in saved["history"]]
 
     def obstacles_for_subtask(self, target_id: int) -> list[SceneObject]:
         """All objects except the current subtask target and the carried object."""
@@ -88,4 +109,5 @@ class SceneState:
                 obj.bbox[2] + dx,
                 obj.bbox[3] + dy,
             ]
+            obj.history.append(destination[:])
         self.carried_object_id = None

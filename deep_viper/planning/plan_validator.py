@@ -7,7 +7,10 @@ from deep_viper.planning.geometry import bbox_iou, center_to_bbox
 from deep_viper.scene.state import SceneState
 
 MAX_RECURSION_DEPTH = 3
-_conflict_default: str | None = None  # set once per session by validate_and_expand
+# How full-overlap conflicts resolve when not told otherwise. "clear" relocates
+# the blocker to free space first (safe default); "stack" places on top of it.
+# A caller may force "stack" via conflict_default="s".
+_stack_on_full_overlap = False
 
 
 def validate_and_expand(
@@ -33,8 +36,8 @@ def validate_and_expand(
         2. If conflict -> emit clearance block first (recurse for cascading).
         3. Then emit the carry-block (with updated pick destination if T moved).
     """
-    global _conflict_default
-    _conflict_default = conflict_default
+    global _stack_on_full_overlap
+    _stack_on_full_overlap = (conflict_default == "s")
 
     from deep_viper.planning.workspace import calibrate_placeable_region
     region = calibrate_placeable_region(scene)
@@ -52,17 +55,6 @@ def validate_and_expand(
         s.step = i
 
     return expanded, conflict_log
-
-
-def _ask_conflict_choice() -> str:
-    """Prompt user for [s/p] choice, or use the session default if set."""
-    if _conflict_default is not None:
-        print(f"  Choice [s/p]: {_conflict_default}  (auto)")
-        return _conflict_default
-    choice = ""
-    while choice not in ("s", "p"):
-        choice = input("  Choice [s/p]: ").strip().lower()
-    return choice
 
 
 def _expand(
@@ -188,37 +180,27 @@ def _handle_carry_block(
         result.extend(_emit_carry_block(carry_block, sim))
 
     elif max_iou > FULL_OVERLAP_THRESHOLD:
-        # Full overlap — ask user BEFORE picking up
-        print(f"\n  [CONFLICT] Placing target {target_id} at {destination} "
-              f"fully overlaps target {worst_blocker.id} ({worst_blocker.label}) "
-              f"(IoU={max_iou:.2f})")
-        print(f"\n  [s] Stack  - {worst_blocker.label} stays, "
-              f"place target {target_id} at {destination} (objects overlap/stack)")
-        print(f"  [p] Place  - move {worst_blocker.label} to free space first, "
-              f"then place target {target_id} at {destination}")
-        print()
-
-        choice = _ask_conflict_choice()
-
+        # Full overlap — auto-resolve (no terminal prompt). Default: clear the
+        # blocker to free space first. Caller may force stacking via conflict_default="s".
         record = ConflictRecord(
-            step=place_op.step,
-            op="place",
-            conflict_type="full_overlap",
-            iou=round(max_iou, 3),
-            target_id=target_id,
-            blocker_id=worst_blocker.id,
-            destination=destination,
-            user_choice=choice,
+            step=place_op.step, op="place", conflict_type="full_overlap",
+            iou=round(max_iou, 3), target_id=target_id,
+            blocker_id=worst_blocker.id, destination=destination,
         )
-
-        if choice == "s":
-            print(f"  [Validator] Stacking: executing carry block, blocker {worst_blocker.id} excluded from obstacles.")
+        if _stack_on_full_overlap:
+            record.resolution = "stack"
+            record.summary = (f"target {target_id} placed on top of {worst_blocker.label} "
+                              f"at {destination} (stacked, IoU {max_iou:.2f})")
+            print(f"  [Validator] {record.summary}")
             conflict_log.append(record)
             result.extend(_emit_carry_block(carry_block, sim, stack_onto=worst_blocker.id))
         else:
-            # [p] — clear blocker first, then carry block
             clearance = _make_clearance(worst_blocker, sim, image_size, place_op.step)
+            record.resolution = "clear"
+            record.summary = (f"{worst_blocker.label} cleared to free space before "
+                              f"placing target {target_id} at {destination} (IoU {max_iou:.2f})")
             record.inserted_steps = [s.step for s in clearance]
+            print(f"  [Validator] {record.summary}")
             conflict_log.append(record)
             expanded_clearance = _expand(clearance, sim, image_size, conflict_log, depth + 1)
             result.extend(expanded_clearance)
@@ -226,19 +208,14 @@ def _handle_carry_block(
 
     else:
         # Partial overlap — auto-clear blocker before picking up
-        print(f"\n  [Validator] Partial overlap (IoU={max_iou:.2f}) detected: "
-              f"target {target_id} at {destination} overlaps {worst_blocker.label}. "
-              f"Auto-inserting clearance before picking up target {target_id}.")
-
         record = ConflictRecord(
-            step=place_op.step,
-            op="place",
-            conflict_type="partial_overlap",
-            iou=round(max_iou, 3),
-            target_id=target_id,
-            blocker_id=worst_blocker.id,
-            destination=destination,
+            step=place_op.step, op="place", conflict_type="partial_overlap",
+            iou=round(max_iou, 3), target_id=target_id,
+            blocker_id=worst_blocker.id, destination=destination, resolution="clear",
+            summary=(f"{worst_blocker.label} nudged aside before placing target "
+                     f"{target_id} at {destination} (partial overlap, IoU {max_iou:.2f})"),
         )
+        print(f"  [Validator] {record.summary}")
 
         clearance = _make_clearance(worst_blocker, sim, image_size, place_op.step)
         record.inserted_steps = [s.step for s in clearance]
@@ -277,22 +254,26 @@ def _handle_place(
         sim.place(target_id, destination)
         result.append(subtask)
     elif max_iou > FULL_OVERLAP_THRESHOLD:
-        print(f"\n  [CONFLICT] place target {target_id} at {destination} "
-              f"fully overlaps {worst_blocker.label} (IoU={max_iou:.2f})")
-        print(f"\n  [s] Stack  [p] Clear blocker first")
-        choice = _ask_conflict_choice()
         record = ConflictRecord(
             step=subtask.step, op="place", conflict_type="full_overlap",
             iou=round(max_iou, 3), target_id=target_id,
-            blocker_id=worst_blocker.id, destination=destination, user_choice=choice,
+            blocker_id=worst_blocker.id, destination=destination,
         )
-        if choice == "s":
+        if _stack_on_full_overlap:
+            record.resolution = "stack"
+            record.summary = (f"target {target_id} placed on top of {worst_blocker.label} "
+                              f"at {destination} (stacked, IoU {max_iou:.2f})")
+            print(f"  [Validator] {record.summary}")
             conflict_log.append(record)
             sim.place(target_id, destination)
             result.append(subtask)
         else:
             clearance = _make_clearance(worst_blocker, sim, image_size, subtask.step)
+            record.resolution = "clear"
+            record.summary = (f"{worst_blocker.label} cleared to free space before "
+                              f"placing target {target_id} at {destination} (IoU {max_iou:.2f})")
             record.inserted_steps = [s.step for s in clearance]
+            print(f"  [Validator] {record.summary}")
             conflict_log.append(record)
             result.extend(_expand(clearance, sim, image_size, conflict_log, depth + 1))
             sim.place(target_id, destination)
@@ -301,7 +282,9 @@ def _handle_place(
         record = ConflictRecord(
             step=subtask.step, op="place", conflict_type="partial_overlap",
             iou=round(max_iou, 3), target_id=target_id,
-            blocker_id=worst_blocker.id, destination=destination,
+            blocker_id=worst_blocker.id, destination=destination, resolution="clear",
+            summary=(f"{worst_blocker.label} nudged aside before placing target "
+                     f"{target_id} at {destination} (partial overlap, IoU {max_iou:.2f})"),
         )
         clearance = _make_clearance(worst_blocker, sim, image_size, subtask.step)
         record.inserted_steps = [s.step for s in clearance]

@@ -16,6 +16,7 @@ from deep_viper.memory.causal import CausalMemory, approach_direction
 from deep_viper.planning.geometry import (
     check_trajectory_collisions, path_metrics, optimality_score,
 )
+from deep_viper.planning.motion import carry_z
 from deep_viper.vlm.client import call_vlm, extract_json
 from deep_viper.vlm.prompts import proposal_prompt, scoring_prompt, refinement_prompt
 from deep_viper.session.events import EventType, ControlAction
@@ -177,6 +178,12 @@ def node_draw_and_score(state: TrajectoryState) -> TrajectoryState:
     ]
     base_img = draw_base_scene(state.scene_state)
 
+    # The arm traverses at carry height; for 3D scenes an obstacle shorter than
+    # that is flown over (not a collision). None for 2D scenes (no Z) -> the
+    # collision check reduces to the planar footprint test.
+    scene = state.scene_state
+    traverse_z = carry_z(scene.table_z) if scene.is_3d and scene.table_z is not None else None
+
     scores = []
     all_arrow_scores = []
 
@@ -184,10 +191,13 @@ def node_draw_and_score(state: TrajectoryState) -> TrajectoryState:
         # Draw only this trajectory on a fresh base
         traj_img = draw_single_trajectory(base_img, waypoints, arm_pos, goal_pos)
 
-        # Geometry collision check
-        geo_results = check_trajectory_collisions(waypoints, arm_pos, state.obstacles)
+        # Geometry collision check (height-resolved when 3D data is present)
+        geo_results = check_trajectory_collisions(
+            waypoints, arm_pos, state.obstacles,
+            carry_z=traverse_z, table_z=scene.table_z)
 
-        prompt = scoring_prompt(arm_pos, goal_pos, obstacles_desc, rank, waypoints)
+        prompt = scoring_prompt(arm_pos, goal_pos, obstacles_desc, rank, waypoints,
+                                carry_aware=(traverse_z is not None))
         collisions = [r for r in geo_results if r["collision"]]
         print(f"  [Score] Trajectory {rank}/{len(state.trajectories)}... (geo collisions: {len(collisions)})")
         img_b64 = image_to_base64(traj_img)

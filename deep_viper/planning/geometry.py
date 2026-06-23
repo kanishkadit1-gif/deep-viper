@@ -90,25 +90,51 @@ def clearance_to_bbox(p1: list[int], p2: list[int], bbox: list[int]) -> float:
     return min_d
 
 
+def _obstacle_top_z(obs: SceneObject) -> float | None:
+    """World Z of an obstacle's top, or None if the scene carries no height for it."""
+    if getattr(obs, "bbox_3d", None) and len(obs.bbox_3d) == 6:
+        return obs.bbox_3d[5]    # [x1,y1,z1, x2,y2,z2] -> max Z
+    return None
+
+
 def check_trajectory_collisions(waypoints: list[list[int]],
                                  arm_pos: list[int],
-                                 obstacles: list[SceneObject]) -> list[dict]:
+                                 obstacles: list[SceneObject],
+                                 carry_z: float | None = None,
+                                 table_z: float | None = None,
+                                 z_margin: float = 0.02) -> list[dict]:
     """
-    For every arrow (arm->wp0, wp0->wp1, ...) x every obstacle,
-    returns a flat list of results.
+    Collision of each arrow (arm->wp0, wp0->wp1, ...) against each obstacle.
+
+    Height-resolved when 3D data is available: the arm TRAVERSES horizontal
+    segments at `carry_z` (the fixed clearance height the IK lifts to). An
+    obstacle blocks a traverse only if the arm does NOT clear its top — i.e.
+    `carry_z` is not at least `z_margin` above the obstacle's top. Obstacles
+    shorter than the carry height are flown over (no collision), exactly matching
+    the physical lift-traverse-descend motion.
+
+    When `carry_z` is None or an obstacle has no 3D height, that obstacle is
+    treated as full-height (∞) and the check reduces to the planar footprint test
+    — correct for 2D-only scenes that carry no Z to reason about.
     """
     pts = [arm_pos] + waypoints
     results = []
     for i in range(len(pts) - 1):
         p1, p2 = pts[i], pts[i + 1]
         for obs in obstacles:
-            collision = segment_intersects_bbox(p1, p2, obs.bbox)
+            footprint_hit = segment_intersects_bbox(p1, p2, obs.bbox)
+            top_z = _obstacle_top_z(obs)
+            # Does the arm clear this obstacle while traversing at carry height?
+            cleared = (carry_z is not None and top_z is not None
+                       and carry_z >= top_z + z_margin)
+            collision = footprint_hit and not cleared
             clearance = clearance_to_bbox(p1, p2, obs.bbox)
             results.append({
                 "arrow_idx": i,
                 "obstacle_id": f"obj_{obs.id}",
                 "collision": collision,
                 "clearance_px": round(clearance, 1),
+                "flown_over": bool(footprint_hit and cleared),
             })
     return results
 

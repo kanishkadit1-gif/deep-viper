@@ -1,6 +1,13 @@
 def task_planning_prompt(goal: str, objects: list[dict]) -> str:
+    def _hist(o):
+        h = o.get("history") or []
+        if len(h) <= 1:
+            return ""
+        chain = " -> ".join(str(p) for p in h)
+        return f"  (position history oldest->newest: {chain}; ORIGINAL {h[0]})"
     obj_desc = "\n".join(
         f"  - obj_{o['id']}: {o['label']} at center {o['center']}, bbox {o['bbox']}"
+        + _hist(o)
         for o in objects
     )
     return (
@@ -28,7 +35,12 @@ def task_planning_prompt(goal: str, objects: list[dict]) -> str:
         "4. When the goal says 'move A near/next to/beside B', call the find_free_spot_near tool with B's object_id to get a free coordinate, then use that as destination.\n"
         "5. Pattern for moving one object: move_to(A, A.center) -> pick(A) -> move_to(A, dest) -> place(A, dest).\n"
         "6. For goals involving multiple objects, chain the patterns sequentially — no duplicate steps.\n"
-        "7. Do not invent steps the goal does not ask for.\n\n"
+        "7. Do not invent steps the goal does not ask for.\n"
+        "8. When the goal references where an object USED TO BE — 'its original "
+        "position', 'where the blue box originally was', 'back to its starting spot' "
+        "— read that coordinate from the object's position history (the ORIGINAL "
+        "entry is the first/oldest center). Use that [x, y] as the destination, NOT "
+        "the object's current center.\n\n"
         f"SCENE OBJECTS:\n{obj_desc}\n\n"
         f"GOAL: {goal}\n\n"
         "Respond with ONLY a JSON object in this exact schema — no markdown, no prose outside JSON:\n"
@@ -145,7 +157,7 @@ def refinement_prompt(arm_pos: list[int], goal_pos: list[int],
 
 def scoring_prompt(arm_pos: list[int], goal_pos: list[int],
                    obstacles: list[dict], trajectory_rank: int,
-                   waypoints: list[list[int]]) -> str:
+                   waypoints: list[list[int]], carry_aware: bool = False) -> str:
     pts = [arm_pos] + waypoints
     arrows = [f"  Arrow {i}: {pts[i]} -> {pts[i+1]}" for i in range(len(pts) - 1)]
     arrow_desc = "\n".join(arrows)
@@ -156,12 +168,22 @@ def scoring_prompt(arm_pos: list[int], goal_pos: list[int],
     ex_from = pts[0]
     ex_to = pts[1] if len(pts) > 1 else goal_pos
 
+    carry_note = (
+        "IMPORTANT — the arm lifts the held object to a fixed CARRY HEIGHT and "
+        "travels horizontally above the table, so it passes OVER short tabletop "
+        "objects without hitting them. Do NOT penalise an arrow merely for crossing "
+        "a low object's box — that is a safe fly-over. Only the DESCENT at the goal "
+        "must land on a clear spot. Judge collisions as if the arm is elevated.\n\n"
+        if carry_aware else ""
+    )
+
     return (
         f"You are evaluating trajectory {trajectory_rank} drawn on the scene image.\n\n"
         f"ARM START: {arm_pos}\n"
         f"GOAL: {goal_pos}\n"
         f"OBSTACLES:\n{obs_desc}\n\n"
         f"ARROWS IN THIS TRAJECTORY:\n{arrow_desc}\n\n"
+        f"{carry_note}"
         "The image shows this trajectory drawn as arrows. For each arrow, look at the image carefully and assess:\n"
         "- Does it pass through or very close to any obstacle bounding box?\n"
         "- Is it moving toward the goal efficiently?\n\n"
