@@ -10,13 +10,21 @@ from deep_viper.config import Config
 from deep_viper.scene.state import SceneState, SceneObject
 from deep_viper.memory.causal import CausalMemory
 from deep_viper.domain import SubTask, CommittedPath
-from deep_viper.pipeline import TrajectoryPlanner, KinematicsStage, Renderer
-from deep_viper.planning.task_planner import plan_tasks
-from deep_viper.planning.plan_validator import validate_and_expand
+from deep_viper.pipeline import (
+    TaskPlanner, TrajectoryPlanner, KinematicsStage, Renderer,
+)
+from deep_viper.planning.execution import run_move
 from deep_viper.vlm.client import build_llm
 from deep_viper.session.events import (
     SessionController, NoOpController, EventType, ControlAction,
 )
+
+
+def _plan_view(subtasks: list[SubTask]) -> list[dict]:
+    """Serializable plan view for the approval-gate event / logs / UI."""
+    return [{"step": s.step, "op": s.op, "args": s.args,
+             **({"stack_onto": s.stack_onto} if s.stack_onto else {})}
+            for s in subtasks]
 
 
 def load_scene(dataset_path: str) -> SceneState:
@@ -69,106 +77,28 @@ def load_scene(dataset_path: str) -> SceneState:
 
 def execute_subtask(subtask: SubTask, scene: SceneState, memory: CausalMemory,
                     cfg: Config, llm: ChatOpenAI, run_dir: Path,
-                    committed_paths: list,
+                    committed_paths: list, router: TrajectoryPlanner,
                     controller: SessionController | None = None) -> tuple[bool, dict | None]:
-    """Execute one subtask. Returns (success, metrics_dict)."""
+    """Execute one subtask. pick/place mutate scene; move_to routes via run_move."""
     ctl = controller or NoOpController()
     op = subtask.op
-    args = subtask.args
-    label = f"step{subtask.step}_{op}"
-    print(f"\n{'='*60}")
-    print(f"[Sub-task {subtask.step}] {op}({args})")
-    print(f"{'='*60}")
+    print(f"\n[Sub-task {subtask.step}] {op}({subtask.args})")
 
     if op == "pick":
-        target_id = args["target_id"]
-        obj = scene.get_object(target_id)
+        obj = scene.get_object(subtask.args["target_id"])
         if obj is None:
-            print(f"  ERROR: object {target_id} not found")
             return False, None
-        scene.pick(target_id)
-        print(f"  [Pick] Object {target_id} ({obj.label}) attached to arm.")
+        scene.pick(subtask.args["target_id"])
         return True, {"step": subtask.step, "op": op, "type": "state_transition"}
 
     if op == "place":
-        target_id = args["target_id"]
-        destination = args["destination"]
-        scene.place(destination)
-        print(f"  [Place] Object {target_id} placed at {destination}.")
+        scene.place(subtask.args["destination"])
         return True, {"step": subtask.step, "op": op, "type": "state_transition"}
 
     if op == "move_to":
-        target_id = args["target_id"]
-        destination = args["destination"]
+        return run_move(subtask, scene, router, memory, run_dir, committed_paths, ctl)
 
-        # goal_pos is always the explicit destination
-        goal_pos = destination
-
-        obj = scene.get_object(target_id)
-        if obj is None:
-            print(f"  ERROR: object {target_id} not found in scene")
-            return False, None
-
-        obstacles = scene.obstacles_for_subtask(target_id)
-        # If stacking onto an object, exclude it from obstacles so arm can reach it
-        if subtask.stack_onto is not None:
-            obstacles = [o for o in obstacles if o.id != subtask.stack_onto]
-            print(f"  [Stack] Excluding obj_{subtask.stack_onto} from obstacles (stacking onto it)")
-
-    else:
-        print(f"  ERROR: unknown op '{op}'")
-        return False, None
-
-    carrying_label = f"T{scene.carried_object_id}" if scene.carried_object_id is not None else None
-
-    # Route the move via the TrajectoryPlanner stage -> typed Waypoints.
-    wp = TrajectoryPlanner(cfg.planning, llm).plan_move(
-        scene, goal_pos, obstacles, memory, run_dir, label, controller=ctl)
-    if wp is None:
-        print(f"\n[ABORT] Sub-task {subtask.step} — no feasible path.")
-        return False, None
-
-    # Assemble the committed path (domain object). The arm has advanced; snapshot
-    # object positions for the GIF background.
-    committed = CommittedPath(
-        arm_start=wp.arm_start, waypoints=wp.points, goal_pos=goal_pos,
-        subtask_label=label, target_id=target_id, carrying_label=carrying_label,
-        carried_id=scene.carried_object_id, best_score=wp.risk,
-        obj_snapshot=[{"id": o.id, "label": o.label, "center": o.center[:],
-                       "bbox": o.bbox[:]} for o in scene.objects],
-    )
-    if scene.is_3d:
-        from deep_viper.planning.projection import unproject_committed_path
-        d = committed.to_dict()
-        unproject_committed_path(d, scene.camera, scene.table_z)
-        committed.waypoints_3d = d.get("waypoints_3d")
-        committed.arm_start_3d = d.get("arm_start_3d")
-        committed.goal_pos_3d = d.get("goal_pos_3d")
-        n3d = sum(1 for p in (committed.waypoints_3d or []) if p is not None)
-        print(f"  [3D] Unprojected {n3d}/{len(committed.waypoints)} waypoints (z={scene.table_z}m)")
-    committed_paths.append(committed)
-
-    committed_img = run_dir / f"{label}_committed.png"
-    ctl.event(EventType.PATH_COMMITTED, f"{label}: committed",
-              image_path=str(committed_img) if committed_img.exists() else None,
-              step=subtask.step, label=label, waypoints=wp.points,
-              metrics={"num_waypoints": wp.num_waypoints, "length_px": wp.length_px},
-              risk=wp.risk)
-
-    mem_metrics = memory.metrics([f"obj_{o.id}" for o in obstacles])
-    n_iters = wp.explore_iters + wp.refine_iters + 1
-    step_metrics = {
-        "step": subtask.step, "op": op, "type": "trajectory",
-        "first_call_success": wp.first_call_success,
-        "retry_count": wp.explore_iters + wp.refine_iters,
-        "best_score": wp.risk, "num_obstacles": len(obstacles),
-        "memory_hit_rate": round(mem_metrics["memory_hit_rate"], 3),
-        "explore_iters": wp.explore_iters, "refine_iters": wp.refine_iters,
-        "final_waypoints": wp.num_waypoints, "final_length_px": wp.length_px,
-        "opt_trace": wp.opt_trace,
-        "vlm_calls": 1 + n_iters * (1 + cfg.planning.num_trajectories),
-    }
-    return True, step_metrics
+    return False, None
 
 
 def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str | None = None,
@@ -206,45 +136,43 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     # The user talks to the system through one chat input; their message is
     # routed by intent: approve -> run, anything else -> refine (re-plan).
     # An empty plan is just another state the user replies to — no dead-end.
+    planner = TaskPlanner(llm)
     plan_hint = ""
     while True:
         plan_goal = goal if not plan_hint else (
             goal + f"\n\nUSER REFINEMENT (follow exactly): {plan_hint}")
-        # The planner returns its own one-line `reason` (how it read the goal,
-        # or — if no steps — why). The harness relays it verbatim, never guesses.
-        subtasks, reason = plan_tasks(plan_goal, scene, llm)
-        subtasks, conflict_log = validate_and_expand(subtasks, scene, conflict_default=conflict_default)
-
-        plan_view = [{"step": s.step, "op": s.op, "args": s.args,
-                      **({"stack_onto": s.stack_onto} if getattr(s, "stack_onto", None) else {})}
-                     for s in subtasks]
+        plan = planner.plan(plan_goal, scene, conflict_default=conflict_default)
 
         # Blocking gate: the harness waits here until the user approves or refines.
+        # The planner authors `reason` (how it read the goal, or why no steps);
+        # the harness relays it verbatim, never guesses.
         # (NoOp controller / CLI returns CONTINUE -> auto-approves, unchanged.)
         decision = ctl.checkpoint(
             EventType.PLAN_PROPOSED,
-            f"Planned {len(subtasks)} step(s)." if subtasks else "No steps produced.",
-            blocking=True, kind="plan_approval", plan=plan_view, reason=reason,
-            empty=(not subtasks), num_conflicts=len(conflict_log),
+            f"Planned {len(plan)} step(s)." if plan.subtasks else "No steps produced.",
+            blocking=True, kind="plan_approval", plan=_plan_view(plan.subtasks),
+            reason=plan.reason, empty=plan.is_empty,
+            num_conflicts=len(plan.conflict_log),
         )
         if decision.stop:
             ctl.event(EventType.SESSION_ABORTED, "Cancelled by user.", step=0)
-            _save_log(run_dir, goal, subtasks, [], conflict_log, [], aborted_at=0)
+            _save_log(run_dir, goal, plan.subtasks, [], plan.conflict_log, [], aborted_at=0)
             return
         if decision.is_correction and decision.correction:
             plan_hint = decision.correction
             ctl.info("Refining the plan with your guidance…")
             continue
-        if not subtasks:
-            # Approved an empty plan (or NoOp on an empty plan): nothing to do.
+        if plan.is_empty:
             ctl.event(EventType.SESSION_ABORTED, "No steps to execute.", step=0)
-            _save_log(run_dir, goal, subtasks, [], conflict_log, [], aborted_at=0)
+            _save_log(run_dir, goal, plan.subtasks, [], plan.conflict_log, [], aborted_at=0)
             return
         break  # approved with a real plan -> execute
 
+    subtasks, conflict_log = plan.subtasks, plan.conflict_log
+
     metrics = []
     committed_paths = []
-    total_vlm_calls = 1  # task planner
+    router = TrajectoryPlanner(cfg.planning, llm)
 
     for subtask in subtasks:
         # Honor STOP between subtasks
@@ -259,7 +187,7 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
             return
 
         success, step_metrics = execute_subtask(
-            subtask, scene, memory, cfg, llm, run_dir, committed_paths, controller=ctl
+            subtask, scene, memory, cfg, llm, run_dir, committed_paths, router, controller=ctl
         )
         if not success:
             print(f"\n[SESSION ABORTED] at step {subtask.step}")
@@ -268,36 +196,24 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
             sys.exit(1)
         if step_metrics:
             metrics.append(step_metrics)
-            if step_metrics.get("type") == "trajectory":
-                total_vlm_calls += step_metrics["vlm_calls"]
 
     # Session summary
-    traj_metrics = [m for m in metrics if m.get("type") == "trajectory"]
+    traj = [m for m in metrics if m.get("type") == "trajectory"]
+    n = len(traj)
     session_summary = {
         "total_subtasks": len(subtasks),
-        "trajectory_subtasks": len(traj_metrics),
-        "first_call_success_rate": (
-            sum(1 for m in traj_metrics if m["first_call_success"]) / len(traj_metrics)
-            if traj_metrics else 0.0
-        ),
-        "avg_retry_count": (
-            sum(m["retry_count"] for m in traj_metrics) / len(traj_metrics)
-            if traj_metrics else 0.0
-        ),
-        "avg_best_score": (
-            sum(m["best_score"] for m in traj_metrics) / len(traj_metrics)
-            if traj_metrics else 0.0
-        ),
-        "total_vlm_calls": total_vlm_calls,
+        "trajectory_subtasks": n,
+        "first_call_success_rate": (sum(m["first_call_success"] for m in traj) / n) if n else 0.0,
+        "avg_retry_count": (sum(m["retry_count"] for m in traj) / n) if n else 0.0,
+        "avg_best_score": (sum(m["best_score"] for m in traj) / n) if n else 0.0,
+        "total_iterations": sum(m["iterations"] for m in traj),
     }
 
-    print(f"\n{'='*60}")
-    print(f"[SESSION COMPLETE] All {len(subtasks)} sub-tasks done.")
-    print(f"  first_call_success_rate : {session_summary['first_call_success_rate']:.2f}")
-    print(f"  avg_retry_count         : {session_summary['avg_retry_count']:.2f}")
-    print(f"  avg_best_score          : {session_summary['avg_best_score']:.4f}")
-    print(f"  total_vlm_calls         : {session_summary['total_vlm_calls']}")
-    print(f"  causal_memory entries   : {len(memory.entries)}")
+    print(f"\n[SESSION COMPLETE] {len(subtasks)} sub-tasks. "
+          f"first_call={session_summary['first_call_success_rate']:.2f} "
+          f"avg_score={session_summary['avg_best_score']:.3f} "
+          f"iters={session_summary['total_iterations']} "
+          f"mem={len(memory.entries)}")
 
     # Kinematics stage: synthesize the joint trajectory (3D scenes only).
     joint_trajectory = None
