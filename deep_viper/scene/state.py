@@ -39,6 +39,25 @@ class SceneState:
                 return obj
         return None
 
+    def world_state(self) -> dict:
+        """Serializable mutable state — what changes as turns execute."""
+        return {
+            "arm_pos": self.arm_pos[:],
+            "carried_object_id": self.carried_object_id,
+            "objects": {o.id: {"center": o.center[:], "bbox": o.bbox[:]}
+                        for o in self.objects},
+        }
+
+    def apply_world_state(self, ws: dict) -> None:
+        """Restore mutable state from a prior turn (reopened session continuity)."""
+        self.arm_pos = ws["arm_pos"][:]
+        self.carried_object_id = ws.get("carried_object_id")
+        for o in self.objects:
+            saved = ws.get("objects", {}).get(o.id) or ws.get("objects", {}).get(str(o.id))
+            if saved:
+                o.center = saved["center"][:]
+                o.bbox = saved["bbox"][:]
+
     def obstacles_for_subtask(self, target_id: int) -> list[SceneObject]:
         """All objects except the current subtask target and the carried object."""
         exclude = {target_id}
