@@ -35,6 +35,9 @@ class SessionHandle:
     dataset_path: str = ""
     blend_path: str = ""
     run_dir: str = ""        # filled from the SESSION_DONE event payload
+    vlm: str | None = None
+    session: object = None   # the live multi-turn Session (deep_viper.session.Session)
+    _record: dict | None = None  # persisted record stashed for lazy rehydration
 
     # Words that mean "approve / proceed" when the user replies to a gate.
     _APPROVE_WORDS = {"approve", "run", "run it", "go", "yes", "ok", "okay",
@@ -43,9 +46,10 @@ class SessionHandle:
     def message(self, text: str) -> str:
         """
         Single chat entry point. Routes one free-text message by session state:
-          - awaiting a gate: an approve-word -> approve; else -> refine (re-plan).
-          - running:        -> coach the VLM (correction).
-        Returns the intent it resolved to (for the UI to echo).
+          - awaiting a gate: approve-word -> approve; else -> refine (re-plan).
+          - running:         -> coach the VLM (correction).
+          - idle/done/aborted: -> "new_turn" (caller starts a fresh turn).
+        Returns the resolved intent.
         """
         t = (text or "").strip()
         low = t.lower().rstrip(".!")
@@ -55,9 +59,11 @@ class SessionHandle:
                 return "approve"
             self._control.put(ControlDecision(ControlAction.CORRECTION, correction=t))
             return "refine"
-        # running (or paused) -> treat as coaching the current step
-        self._control.put(ControlDecision(ControlAction.CORRECTION, correction=t))
-        return "coach"
+        if self.status in ("running", "paused"):
+            self._control.put(ControlDecision(ControlAction.CORRECTION, correction=t))
+            return "coach"
+        # idle / done / aborted -> the caller should start a new turn with this text
+        return "new_turn"
 
     def submit_action(self, action: str, text: str | None = None,
                       override=None) -> None:

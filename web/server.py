@@ -25,7 +25,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from deep_viper.config import load_config
-from deep_viper.planning.harness import run_session
 from deep_viper.session.bridge import SessionHandle, QueueController
 from deep_viper.session.events import EventType
 
@@ -72,9 +71,27 @@ def resolve_session(sid: str) -> SessionHandle | None:
     h.dataset_path = rec.get("dataset_path", "")
     h.blend_path = rec.get("blend_path", "")
     h.run_dir = rec.get("run_dir", "")
+    h.vlm = rec.get("vlm")
     h.history = rec.get("events", [])
+    h._record = rec   # stash for lazy Session rehydration on first new turn
     SESSIONS[sid] = h   # register so WS / render can attach
     return h
+
+
+def _rehydrate_live_session(h: SessionHandle) -> None:
+    """Reconstruct a runnable multi-turn Session from the persisted record so a
+    reopened session accepts new turns exactly like a live one."""
+    from deep_viper.session.session import Session, TurnRecord
+    from deep_viper.planning.harness import load_scene
+    rec = getattr(h, "_record", {}) or {}
+    cfg = load_config(vlm_profile=h.vlm)
+    scene = load_scene(h.dataset_path)
+    if rec.get("world_state"):
+        scene.apply_world_state(rec["world_state"])
+    transcript = [TurnRecord(**t) for t in rec.get("transcript", [])]
+    h.session = Session(cfg, scene, h.dataset_path,
+                        blend_path=h.blend_path, transcript=transcript)
+    h.session.load_corrections()
 
 
 # --------------------------------------------------------------------------- #
@@ -190,7 +207,6 @@ async def start_session(body: dict):
     goal = (body.get("goal") or "").strip()
     dataset_path = body.get("dataset_path")
     vlm = body.get("vlm")  # profile name or None
-    conflict_default = body.get("conflict_default", "p")
     if not goal or not dataset_path:
         return JSONResponse({"error": "goal and dataset_path required"}, status_code=400)
 
@@ -205,40 +221,58 @@ async def start_session(body: dict):
     except Exception:
         pass
     SESSIONS[sid] = handle
+    handle.vlm = vlm
     cfg = load_config(vlm_profile=vlm)
+
+    from deep_viper.session.session import Session
+    from deep_viper.planning.harness import load_scene
+    scene = load_scene(dataset_path)
+    handle.session = Session(cfg, scene, dataset_path, blend_path=handle.blend_path)
+    handle.session.load_corrections()
+
+    _launch_turn(sid, goal)
+    return {"session_id": sid, "status": "running"}
+
+
+def _launch_turn(sid: str, goal: str) -> None:
+    """Run one turn of the session in a background thread."""
+    handle = SESSIONS[sid]
 
     def _run():
         handle.status = "running"
+        handle.stopped.clear()
         ctl = QueueController(handle)
         try:
-            run_session(goal, dataset_path, cfg,
-                        conflict_default=conflict_default, controller=ctl)
+            handle.session.run_turn(goal, controller=ctl)
             if handle.status not in ("aborted",):
                 handle.status = "done"
-        except SystemExit:
-            handle.status = "aborted"
         except Exception as e:
             handle.status = "error"
             handle.events.put(_err_event(str(e)))
         finally:
-            _persist_session(sid, handle, goal, dataset_path, vlm)
+            _persist_session(sid, handle)
             handle.events.put(_sentinel_event())
 
     t = threading.Thread(target=_run, daemon=True)
     handle.thread = t
     t.start()
-    return {"session_id": sid, "status": "running"}
 
 
-def _persist_session(sid, handle, goal, dataset_path, vlm):
-    """Save a session's full event history for later replay/resume."""
+def _persist_session(sid, handle):
+    """Persist events + world state + transcript for replay AND resume."""
     try:
         SESSIONS_STORE.mkdir(parents=True, exist_ok=True)
-        (SESSIONS_STORE / f"{sid}.json").write_text(json.dumps({
-            "session_id": sid, "goal": goal, "dataset_path": dataset_path,
-            "blend_path": handle.blend_path, "run_dir": handle.run_dir,
-            "vlm": vlm, "status": handle.status, "events": handle.history,
-        }, indent=2))
+        sess = handle.session
+        rec = {
+            "session_id": sid, "goal": handle.goal,
+            "dataset_path": handle.dataset_path, "blend_path": handle.blend_path,
+            "vlm": getattr(handle, "vlm", None), "status": handle.status,
+            "run_dir": handle.run_dir, "events": handle.history,
+        }
+        if sess is not None:
+            rec["world_state"] = sess.scene.world_state()
+            rec["transcript"] = [t.__dict__ for t in sess.transcript]
+        (SESSIONS_STORE / f"{sid}.json").write_text(json.dumps(rec, indent=2))
     except Exception:
         pass
 
@@ -268,11 +302,18 @@ def get_session_events(sid: str):
 
 @app.post("/api/session/{sid}/message")
 async def session_message(sid: str, body: dict):
-    """One chat input — control: routes free text on a LIVE session only."""
-    h = live_session(sid)
+    """One chat input. Routes by state; on an idle/reopened session a message
+    starts a NEW TURN (reopened == live, multi-turn)."""
+    text = body.get("text", "")
+    h = resolve_session(sid)
     if not h:
-        return JSONResponse({"error": "session is not running"}, status_code=409)
-    intent = h.message(body.get("text", ""))
+        return JSONResponse({"error": "unknown session"}, status_code=404)
+    if h.session is None:
+        _rehydrate_live_session(h)
+    intent = h.message(text)
+    if intent == "new_turn":
+        _launch_turn(sid, text)
+        return {"ok": True, "intent": "new_turn", "status": "running"}
     return {"ok": True, "intent": intent, "status": h.status}
 
 
