@@ -62,10 +62,16 @@ export default function App() {
   // The single chat input. Routes by session state on the backend.
   async function say(text) {
     if (!active?.sessionId || !text.trim()) return;
-    // Echo the user's message into the timeline immediately.
     pushEvent({ type: "user_message", message: text, ts: Date.now() / 1000 });
     const res = await sendMessage(active.sessionId, text);
-    if (res?.status) setStatus(res.status === "awaiting" ? "running" : res.status);
+    // A new turn (e.g. typing into a reopened/finished session) starts fresh
+    // execution — (re)attach the WebSocket so its events stream in.
+    if (res?.intent === "new_turn") {
+      openWs(active);
+      setStatus("running");
+    } else if (res?.status) {
+      setStatus(res.status === "awaiting" ? "running" : res.status);
+    }
   }
 
   function control(a) {

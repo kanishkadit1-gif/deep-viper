@@ -1,7 +1,7 @@
 # Deep VIPER v2 — System Specification
 **Version:** 6.0
 **Date:** 2026-06-23
-**Status:** Modular pipeline COMPLETE (L1 domain + L2 stages + Pipeline façade, all headless-callable); multi-turn sessions PENDING
+**Status:** v6.0 COMPLETE — modular pipeline (L1 domain + L2 stages + Pipeline façade) + multi-turn sessions (reopened == live)
 **Previous versions:** spec_v5.0.md, spec_v4.3.md, spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
 
 ---
@@ -75,11 +75,18 @@ through the controller; NoOp = headless. This is what keeps stages driver-agnost
 - Verified identical output (2 committed paths, 100 IK frames, GIF) across the
   harness session, `Pipeline.from_goal`, and `Pipeline.execute_plan` (no-VLM).
 
-**Pending (next focused pass) — multi-turn sessions:**
-- `Session` + `SessionStore`: persist world_state (final object positions +
-  arm pos) + transcript (per-turn goal→outcome); reopened == live; planner sees
-  prior turns as context. (`run_session` is still single-turn.)
-- Then collapse `run_session` onto `Session.run_turn` and remove single-turn paths.
+**Multi-turn sessions (DONE):**
+- `deep_viper/session/session.py::Session` owns scene + memory + transcript;
+  `run_turn(goal)` does plan-gate → execute → IK/log/gif, mutating the shared
+  scene so follow-ups plan against the real layout; planner gets a compact
+  transcript of prior turns. `SceneState.world_state()/apply_world_state()`.
+- `run_session` is now a 7-line wrapper over `Session.run_turn` (harness 287→73 lines).
+- Web: `_launch_turn` runs each goal as a turn; `_persist_session` saves
+  world_state + transcript; the `message` endpoint routes idle/done → `new_turn`
+  (start a fresh turn) via `resolve_session` + `_rehydrate_live_session` →
+  **reopened == live**. Frontend `say()` re-attaches the WS on `new_turn`.
+- Verified: world-state survives persist→reopen; transcript continuity; message
+  routing returns new_turn on idle/done, approve/refine/coach otherwise.
 
 **Dev discipline in force:** no back-compat shims / speculative helpers; move-and-
 delete; keep useful standalone utilities (make_gif.py, generate_dataset.py).
