@@ -32,7 +32,8 @@ class Renderer:
     def render_video(self, scene: SceneState, joint_trajectory: JointTrajectory,
                      blend_path: str, out_dir: Path,
                      box_name_by_id: dict[int, str],
-                     samples: int = 128, resolution=(1280, 720), fps: int = 24) -> dict:
+                     samples: int = 128, resolution=(1280, 720), fps: int = 24,
+                     progress_cb=None, should_cancel=None, on_process=None) -> dict:
         """Render the Blender arm video. Requires a .blend for the scene."""
         from deep_viper.scene.blender_renderer import render_session_video
         table_z = scene.table_z if scene.table_z is not None else 0.75
@@ -44,4 +45,5 @@ class Renderer:
             arm_base=[0.0, _ARM_BASE_Y_OFFSET, table_z], table_z=table_z,
             assets_dir=str(Path(__file__).resolve().parents[2] / "data" / "blender" / "assets"),
             out_dir=str(out_dir), samples=samples, resolution=resolution, fps=fps,
+            progress_cb=progress_cb, should_cancel=should_cancel, on_process=on_process,
         )

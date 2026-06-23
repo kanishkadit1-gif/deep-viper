@@ -345,20 +345,29 @@ async def session_action(sid: str, body: dict):
 
 
 @app.post("/api/session/{sid}/render_video")
-async def render_video(sid: str):
+async def render_video(sid: str, body: dict | None = None):
     """
-    Optional, user-triggered Phase-4 render: turn the committed joint trajectory
-    into a Blender arm video. Only available when the scene had a .blend.
-    Streams render_progress events; emits a final SESSION_DONE with the mp4 path.
+    Optional, user-triggered Phase-4 render -> Blender arm video. Streams
+    RENDER_PROGRESS events (done/total), is interruptible, and supports a
+    quality knob (samples). Only available when the scene had a .blend.
     """
     from deep_viper.session.events import Event, EventType
-    h = resolve_session(sid)   # live, else rehydrated from the persisted record
+    h = resolve_session(sid)
     if not h:
         return JSONResponse({"error": "unknown session"}, status_code=404)
     if not h.blend_path or not Path(h.blend_path).exists():
         return JSONResponse({"error": "no .blend for this scene — video not available"}, status_code=400)
     if not h.run_dir or not (Path(h.run_dir) / "run_log.json").exists():
         return JSONResponse({"error": "no completed run to render"}, status_code=400)
+
+    samples = int((body or {}).get("samples", 128))
+    res_map = {"preview": (32, (960, 540)), "full": (128, (1280, 720))}
+    quality = (body or {}).get("quality")
+    if quality in res_map:
+        samples, resolution = res_map[quality]
+    else:
+        resolution = (1280, 720)
+    h.render_cancel.clear()
 
     def _render():
         from deep_viper.pipeline import Renderer
@@ -374,20 +383,59 @@ async def render_video(sid: str):
             scene = load_scene(h.dataset_path)
             jt = JointTrajectory(frames=[JointFrame(**f) for f in jt_raw])
             box_name_by_id = {o["id"]: f"Box_{o['id']}_{o['color']}" for o in ds["objects"]}
-            h.events.put(Event(EventType.RENDER_PROGRESS,
-                               f"Rendering {len(jt)} frames in Blender…", {"frames": len(jt)}))
-            res = Renderer().render_video(scene, jt, h.blend_path, Path(h.run_dir),
-                                          box_name_by_id)
-            if res.get("video"):
+            import time as _t
+            t0 = _t.time()
+
+            def progress(done, total):
+                pct = round(100 * done / max(total, 1))
+                elapsed = int(_t.time() - t0)
+                eta = int(elapsed / done * (total - done)) if done else None
+                h.events.put(Event(EventType.RENDER_PROGRESS,
+                    f"Rendering {done}/{total} frames ({pct}%)",
+                    {"done": done, "total": total, "pct": pct,
+                     "elapsed_s": elapsed, "eta_s": eta}))
+
+            res = Renderer().render_video(
+                scene, jt, h.blend_path, Path(h.run_dir), box_name_by_id,
+                samples=samples, resolution=resolution,
+                progress_cb=progress,
+                should_cancel=lambda: h.render_cancel.is_set(),
+                on_process=lambda p: setattr(h, "render_proc", p))
+            if res.get("cancelled"):
+                h.events.put(Event(EventType.INFO, "Render cancelled.", {"cancelled": True}))
+            elif res.get("video"):
                 h.events.put(Event(EventType.SESSION_DONE, "Video ready",
                                    {"video": res["video"], "n_frames": res["n_frames"]}))
             else:
                 h.events.put(Event(EventType.INFO, "Render finished but no video produced.", {}))
         except Exception as e:
             h.events.put(Event(EventType.INFO, f"Render error: {e}", {"error": str(e)}))
+        finally:
+            h.render_proc = None
 
     threading.Thread(target=_render, daemon=True).start()
-    return {"ok": True, "status": "rendering"}
+    return {"ok": True, "status": "rendering", "samples": samples}
+
+
+@app.post("/api/session/{sid}/render_cancel")
+async def render_cancel(sid: str):
+    h = SESSIONS.get(sid)
+    if not h:
+        return JSONResponse({"error": "unknown session"}, status_code=404)
+    h.render_cancel.set()
+    return {"ok": True}
+
+
+@app.delete("/api/session/{sid}")
+async def delete_session(sid: str):
+    h = SESSIONS.pop(sid, None)
+    if h is not None:
+        h.stopped.set()
+        h.render_cancel.set()
+    f = SESSIONS_STORE / f"{sid}.json"
+    if f.exists():
+        f.unlink()
+    return {"ok": True}
 
 
 @app.get("/api/video")

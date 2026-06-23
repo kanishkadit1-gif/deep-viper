@@ -71,10 +71,21 @@ export async function getSessionEvents(sid) {
   return r.json();
 }
 
-// Trigger the optional Blender video render for a finished session.
-export async function renderVideo(sid) {
-  const r = await fetch(`/api/session/${sid}/render_video`, { method: "POST" });
+// Trigger the optional Blender video render. quality: "preview" | "full".
+export async function renderVideo(sid, quality = "full") {
+  const r = await fetch(`/api/session/${sid}/render_video`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ quality }),
+  });
   return r.json();
+}
+
+export async function cancelRender(sid) {
+  await fetch(`/api/session/${sid}/render_cancel`, { method: "POST" });
+}
+
+export async function deleteSession(sid) {
+  await fetch(`/api/session/${sid}`, { method: "DELETE" });
 }
 
 export function videoUrl(path) {

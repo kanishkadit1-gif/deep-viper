@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import tempfile
+import time
 from pathlib import Path
 
 
@@ -33,15 +33,24 @@ def render_session_video(
     resolution: tuple[int, int] = (1280, 720),
     fps: int = 24,
     encode: bool = True,
+    progress_cb=None,        # called as progress_cb(done, total) while rendering
+    should_cancel=None,      # called periodically; if it returns True, abort
+    on_process=None,         # called once with the Popen handle (for external kill)
 ) -> dict:
     """
     Render the joint trajectory through Blender and (optionally) encode to MP4.
-    Returns {"frames_dir":..., "video": path|None, "n_frames":..., "ok":bool}.
+    Streams progress via progress_cb and honors should_cancel.
+    Returns {"frames_dir":..., "video": path|None, "n_frames":..., "ok":bool,
+             "cancelled": bool}.
     """
     out_dir = Path(out_dir).resolve()   # absolute — Blender resolves cwd to its own dir
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    # Clean stale frames so progress counts only this render.
+    for old in frames_dir.glob("frame_*.png"):
+        old.unlink()
 
+    total = len(joint_trajectory)
     cfg = {
         "frames": joint_trajectory,
         "arm_base": list(arm_base),
@@ -52,38 +61,56 @@ def render_session_video(
         "resolution": list(resolution),
         "box_name_by_id": {str(k): v for k, v in box_name_by_id.items()},
     }
-
     traj_path = out_dir / "render_traj.json"
-    with open(traj_path, "w") as f:
-        json.dump(cfg, f)
+    traj_path.write_text(json.dumps(cfg))
 
-    cmd = [
-        blender_path, "--background", scene_blend,
-        "--python", str(RENDER_SCRIPT), "--", str(traj_path),
-    ]
-    print(f"[Render] Launching Blender: {len(joint_trajectory)} frames @ {samples} samples...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print("[Render] Blender FAILED:")
-        print(result.stderr[-2000:] if result.stderr else result.stdout[-2000:])
-        return {"frames_dir": str(frames_dir), "video": None,
-                "n_frames": 0, "ok": False}
+    cmd = [blender_path, "--background", scene_blend,
+           "--python", str(RENDER_SCRIPT), "--", str(traj_path)]
+    print(f"[Render] Launching Blender: {total} frames @ {samples} samples...")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if on_process:
+        on_process(proc)
+
+    # Poll: emit progress from frames on disk; honor cancellation.
+    cancelled = False
+    last_done = -1
+    while proc.poll() is None:
+        if should_cancel and should_cancel():
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            cancelled = True
+            break
+        done = len(list(frames_dir.glob("frame_*.png")))
+        if done != last_done and progress_cb:
+            progress_cb(done, total)
+            last_done = done
+        time.sleep(1.0)
 
     rendered = sorted(frames_dir.glob("frame_*.png"))
-    print(f"[Render] {len(rendered)} frames rendered.")
+    if progress_cb and not cancelled:
+        progress_cb(len(rendered), total)
 
+    if cancelled:
+        return {"frames_dir": str(frames_dir), "video": None,
+                "n_frames": len(rendered), "ok": False, "cancelled": True}
+    if proc.returncode != 0:
+        return {"frames_dir": str(frames_dir), "video": None,
+                "n_frames": len(rendered), "ok": False, "cancelled": False}
+
+    print(f"[Render] {len(rendered)} frames rendered.")
     video_path = None
     if encode and rendered:
         video_path = out_dir / "session.mp4"
-        ok = _encode_video(frames_dir, video_path, fps)
-        if not ok:
+        if not _encode_video(frames_dir, video_path, fps):
             video_path = None
 
     return {
         "frames_dir": str(frames_dir),
         "video": str(video_path) if video_path else None,
-        "n_frames": len(rendered),
-        "ok": True,
+        "n_frames": len(rendered), "ok": True, "cancelled": False,
     }
 
 

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getModels, startSession, openSessionSocket, sendAction,
-  sendMessage, getSessionEvents, renderVideo,
+  sendMessage, getSessionEvents, renderVideo, cancelRender, deleteSession,
 } from "./api";
+import { deleteSession as forgetLocal } from "./sessionStore";
 import Sidebar from "./components/Sidebar";
 import NewSession from "./components/NewSession";
 import Session from "./components/Session";
@@ -86,8 +87,19 @@ export default function App() {
     if (wsRef.current) wsRef.current.send(JSON.stringify({ action: "override", override: waypoints }));
   }
 
-  async function generateVideo() {
-    if (active?.sessionId) { openWs(active); await renderVideo(active.sessionId); }
+  async function generateVideo(quality = "full") {
+    if (active?.sessionId) { openWs(active); await renderVideo(active.sessionId, quality); }
+  }
+
+  async function stopRender() {
+    if (active?.sessionId) await cancelRender(active.sessionId);
+  }
+
+  async function removeSession(rec) {
+    if (rec.sessionId) await deleteSession(rec.sessionId).catch(() => {});
+    forgetLocal(rec.id);
+    setSessions((prev) => prev.filter((s) => s.id !== rec.id));
+    if (active?.id === rec.id) newChat();
   }
 
   function newChat() {
@@ -107,7 +119,7 @@ export default function App() {
   return (
     <div className="h-full flex bg-viper-bg text-viper-text">
       <Sidebar sessions={sessions} active={active} onNew={newChat} onOpen={openPast}
-               models={models} vlm={vlm} setVlm={setVlm}
+               onDelete={removeSession} models={models} vlm={vlm} setVlm={setVlm}
                vlmLocked={status === "running" || status === "paused"} />
       <div className="flex-1 min-w-0 flex flex-col">
         {composing ? (
@@ -115,7 +127,8 @@ export default function App() {
         ) : (
           <Session events={events} status={status} scene={active?.scene} goal={active?.goal}
                    onSay={say} onApprove={approve} onControl={control}
-                   onEdit={editWaypoints} onRenderVideo={generateVideo} />
+                   onEdit={editWaypoints} onRenderVideo={generateVideo}
+                   onCancelRender={stopRender} />
         )}
       </div>
     </div>

@@ -10,7 +10,7 @@ import TrajectoryOverlay from "./TrajectoryOverlay";
  * coach). The plan appears inline as a message with an Approve button.
  */
 export default function Session({ events, status, scene, goal, onSay, onApprove,
-                                  onControl, onEdit, onRenderVideo }) {
+                                  onControl, onEdit, onRenderVideo, onCancelRender }) {
   // --- derive the current visual for the stage ---
   const geoEvt = useMemo(
     () => [...events].reverse().find((e) => e.payload?.geometry), [events]);
@@ -29,6 +29,17 @@ export default function Session({ events, status, scene, goal, onSay, onApprove,
     const moved = after.some((e) =>
       ["segment_started", "session_done", "session_aborted"].includes(e.type));
     return moved ? null : lastPlan.payload;
+  }, [events]);
+
+  // Live render progress (latest render_progress event after the last video).
+  const renderProg = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.payload?.video) return null;            // already finished
+      if (e.type === "render_progress") return e.payload;
+      if (e.type === "info" && e.payload?.cancelled) return { cancelled: true };
+    }
+    return null;
   }, [events]);
 
   const geo = geoEvt?.payload?.geometry;
@@ -73,17 +84,10 @@ export default function Session({ events, status, scene, goal, onSay, onApprove,
               </div>
             )}
           </div>
-          {/* Done -> optional video */}
+          {/* Done -> optional video (with live progress + interrupt) */}
           {(status === "done") && !videoEvt && (
-            <div className="text-xs text-viper-muted flex items-center gap-3">
-              <span>Animated trajectory playback.</span>
-              {scene?.has_blend && (
-                <button onClick={onRenderVideo}
-                  className="rounded-lg bg-viper-accent hover:bg-indigo-500 text-white px-3 py-1.5 font-medium">
-                  🎬 Render full robot-arm video
-                </button>
-              )}
-            </div>
+            <RenderControls hasBlend={scene?.has_blend} prog={renderProg}
+                            onRender={onRenderVideo} onCancel={onCancelRender} />
           )}
         </div>
 
@@ -193,6 +197,55 @@ function ApproveRow({ empty, onApprove }) {
       <span className="text-[11px] text-viper-muted">
         {empty ? "Reply below to fix the goal." : "…or type a change below to refine."}
       </span>
+    </div>
+  );
+}
+
+function fmt(s) {
+  if (s == null) return "—";
+  const m = Math.floor(s / 60), sec = s % 60;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+function RenderControls({ hasBlend, prog, onRender, onCancel }) {
+  // Rendering in progress -> progress bar + interrupt.
+  if (prog && !prog.cancelled && prog.total) {
+    return (
+      <div className="w-full max-w-xl">
+        <div className="flex items-center justify-between text-xs mb-1">
+          <span className="text-viper-text/90">Rendering robot-arm video…
+            <span className="text-viper-muted"> {prog.done}/{prog.total} ({prog.pct}%)</span>
+          </span>
+          <button onClick={onCancel}
+            className="text-viper-bad hover:text-red-300 font-medium">■ Interrupt</button>
+        </div>
+        <div className="h-2 rounded-full bg-viper-panel2 overflow-hidden">
+          <div className="h-full bg-viper-accent transition-all duration-500"
+               style={{ width: `${prog.pct}%` }} />
+        </div>
+        <div className="text-[10px] text-viper-muted mt-1">
+          elapsed {fmt(prog.elapsed_s)} · ETA {fmt(prog.eta_s)}
+        </div>
+      </div>
+    );
+  }
+  // Idle -> quality choice.
+  return (
+    <div className="text-xs text-viper-muted flex items-center gap-3">
+      <span>Animated trajectory playback.</span>
+      {hasBlend && (
+        <>
+          <button onClick={() => onRender("full")}
+            className="rounded-lg bg-viper-accent hover:bg-indigo-500 text-white px-3 py-1.5 font-medium">
+            🎬 Render video <span className="opacity-70">(full · 128 spp)</span>
+          </button>
+          <button onClick={() => onRender("preview")}
+            className="rounded-lg bg-viper-panel2 border border-viper-border hover:border-viper-muted px-3 py-1.5">
+            ⚡ Quick preview <span className="opacity-70">(32 spp)</span>
+          </button>
+        </>
+      )}
+      {prog?.cancelled && <span className="text-viper-bad">render cancelled</span>}
     </div>
   );
 }

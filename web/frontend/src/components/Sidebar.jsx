@@ -11,7 +11,7 @@ const STATUS_DOT = {
   aborted: "bg-viper-bad", error: "bg-viper-bad",
 };
 
-export default function Sidebar({ sessions, active, onNew, onOpen, models, vlm, setVlm, vlmLocked }) {
+export default function Sidebar({ sessions, active, onNew, onOpen, onDelete, models, vlm, setVlm, vlmLocked }) {
   return (
     <aside className="w-64 shrink-0 flex flex-col bg-viper-panel border-r border-viper-border">
       {/* Brand */}
@@ -42,22 +42,27 @@ export default function Sidebar({ sessions, active, onNew, onOpen, models, vlm, 
         {sessions.map((s) => {
           const on = active?.id === s.id;
           return (
-            <button key={s.id} onClick={() => onOpen(s)}
-              className={`group w-full text-left rounded-lg px-2.5 py-2 mb-0.5 flex gap-2.5
-                transition ${on ? "bg-viper-panel2" : "hover:bg-viper-panel2/60"}`}>
+            <div key={s.id} onClick={() => onOpen(s)} role="button"
+              className={`group relative w-full text-left rounded-lg px-2.5 py-2 mb-0.5 flex gap-2.5
+                cursor-pointer transition ${on ? "bg-viper-panel2" : "hover:bg-viper-panel2/60"}`}>
               {s.thumb ? (
                 <img src={s.thumb} alt="" className="w-9 h-9 rounded object-cover bg-black shrink-0" />
               ) : (
                 <div className="w-9 h-9 rounded bg-viper-panel2 shrink-0" />
               )}
               <div className="min-w-0 flex-1">
-                <div className="text-xs text-viper-text/90 truncate leading-tight">{s.goal}</div>
+                <div className="text-xs text-viper-text/90 truncate leading-tight pr-5">{s.goal}</div>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[s.status] || "bg-viper-muted"}`} />
                   <span className="text-[10px] text-viper-muted">{timeAgo(s.createdAt)}</span>
                 </div>
               </div>
-            </button>
+              <button title="Delete session"
+                onClick={(e) => { e.stopPropagation();
+                  if (confirm("Delete this session?")) onDelete?.(s); }}
+                className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100
+                           text-viper-muted hover:text-viper-bad text-xs transition">✕</button>
+            </div>
           );
         })}
       </div>

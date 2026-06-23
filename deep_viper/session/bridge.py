@@ -38,6 +38,8 @@ class SessionHandle:
     vlm: str | None = None
     session: object = None   # the live multi-turn Session (deep_viper.session.Session)
     _record: dict | None = None  # persisted record stashed for lazy rehydration
+    render_proc: object = None    # live Blender subprocess (for interrupt)
+    render_cancel: threading.Event = field(default_factory=threading.Event)
 
     # Words that mean "approve / proceed" when the user replies to a gate.
     _APPROVE_WORDS = {"approve", "run", "run it", "go", "yes", "ok", "okay",
