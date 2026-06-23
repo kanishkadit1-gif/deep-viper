@@ -1,0 +1,1553 @@
+╭─── Claude Code v2.1.177 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Binayak!               │ started                 │
+│                                                    │ ✔ Run /init to create … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Session titles are now… │
+│   Sonnet 4.6 · Claude Pro ·                        │ Added `footerLinksRege… │
+│   vinayak.chakraborty8@gmail.com's Organization    │ Improved Bedrock crede… │
+│ C:\Learnings\DSBA\1st Yr May-July Sem 2026\Final … │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+ ▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ Read spec.md and plan.md. Summarize back to me your understanding of the      
+  project's goals, scope, and the planned implementation steps before writing   
+  any code.                                                                     
+
+● Reading both files now.
+
+  Read 2 files (ctrl+o to expand)
+
+● Here is my understanding of the project before any code is written.
+
+  ---
+  VIPER — Project Summary
+
+  What it is
+
+  VIPER (Verifiable Iterative Planning with Ensemble Reasoning) is a visual AI
+  planning system for physical tasks (robotic manipulation, navigation). A user
+  uploads a scene image and types a goal (e.g. "move the red block to the
+  bowl"), and VIPER produces an annotated, step-by-step action plan — validated
+  by two independent language models.
+
+  It fuses two published techniques:
+  - PIVOT (arXiv 2402.07872): iterative visual prompting — overlay numbered
+  candidate actions on the image, ask a VLM to pick the best, refine over
+  multiple iterations.
+  - VLMPC (RSS 2024): vision-language model predictive control — expand
+  candidates into multi-step sequences, simulate outcomes with a forward model,
+  score with a hierarchical cost (pixel + semantic + obstacle).
+
+  Three-layer architecture
+
+  ┌──────────┬────────────────────────────────────────────────┬──────────────┐
+  │  Layer   │                  What it does                  │    Output    │
+  ├──────────┼────────────────────────────────────────────────┼──────────────┤
+  │ GENERATE │ 7-stage PIVOT+VLMPC pipeline with a single VLM │ ActionPlan   │
+  ├──────────┼────────────────────────────────────────────────┼──────────────┤
+  │ DEBATE   │ Claude and Qwen critique the plan in a relay,  │ DebateResult │
+  │          │ converge on a verdict                          │              │
+  ├──────────┼────────────────────────────────────────────────┼──────────────┤
+  │ OUTPUT   │ Combined plan + verdict + transcript           │ ViperResult  │
+  └──────────┴────────────────────────────────────────────────┴──────────────┘
+
+  The layers are strictly separable: GENERATE works and is testable
+  independently; DEBATE only ever sees a packaged DebateArtifact, never pipeline
+  internals.
+
+  Key architectural constraints
+
+  - Every VLM call goes through VLMInterface in src/vlm/interface.py — swapping
+  mock → real is a config change, not a code edit.
+  - All image drawing goes through src/visualization/overlay.py exclusively.
+  - All cross-module data is typed dataclasses from src/models.py — no bare
+  dicts.
+  - All tunables live in config/pipeline.yaml — no hard-coded numbers in src/.
+  - The debate models never call each other directly; the orchestrator relays
+  text between them.
+
+  Build phases (execution order)
+
+  ┌───────┬──────────────────────────────┬──────────────────────────────────┐
+  │ Phase │             Goal             │               Gate               │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ Scaffold — full directory    │                                  │
+  │ 0     │ tree, all dataclasses,       │ python app.py launches, 6 tabs   │
+  │       │ Gradio shell with 6          │ visible                          │
+  │       │ placeholder tabs             │                                  │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ VLM interface +              │ pytest tests/test_mock_vlm.py    │
+  │ 1     │ deterministic MockVLM (incl. │ passes, same seed → same output  │
+  │       │  critique_plan)              │                                  │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │ 2     │ Visualization (overlay.py) — │ pytest tests/test_overlay.py     │
+  │       │  all drawing functions       │ passes                           │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ Full GENERATE pipeline, 7    │ All pipeline tests pass;         │
+  │ 3     │ stages, end-to-end on mock   │ run_pipeline returns a valid     │
+  │       │ VLM                          │ ActionPlan                       │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │ 4     │ Wire Gradio UI to GENERATE   │ Browser demo: upload → goal →    │
+  │       │ (Tabs 1–5 live, debate off)  │ populated result in ~3s          │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ DEBATE layer on mock models  │ pytest tests/test_relay.py       │
+  │ 5     │ — relay, convergence,        │ tests/test_verdict.py; Tab 6     │
+  │       │ tie-break, Tab 6             │ shows full mock debate           │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ Real model swap-in           │ Real Claude+Qwen debate produces │
+  │ 6     │ (AnthropicVLM + QwenVLM, run │  a verdict end-to-end            │
+  │       │  on Kaggle GPU)              │                                  │
+  ├───────┼──────────────────────────────┼──────────────────────────────────┤
+  │       │ Evaluation harness — batch   │ evaluate.py produces a           │
+  │ 7     │ test set, resumable,         │ comparison summary; resumable    │
+  │       │ RunSummary comparing debate  │ after timeout                    │
+  │       │ vs solo models               │                                  │
+  └───────┴──────────────────────────────┴──────────────────────────────────┘
+
+  Phases 0–5 are entirely free and local (mock VLM only). Phases 6–7 require the
+  Kaggle GPU + Claude API key. A complete Phases 0–5 is already a defensible,
+  demoable project.
+
+  ---
+  That's my full understanding. Ready to start Phase 0 whenever you say so.
+
+✻ Baked for 28s
+
+❯ confirm you understand the architecture before we start Phase 0.              
+
+● Confirmed. Here is what I understand about the architecture:
+
+  Three independent layers, strict separation. GENERATE (7-stage pipeline) →
+  DEBATE (relay) → ViperResult. GENERATE must be fully functional and testable
+  before DEBATE is touched. DEBATE only consumes a DebateArtifact — it never
+  reaches back into pipeline internals or sees ground truth.
+
+  Single VLM entry point. Every VLM call in GENERATE goes through VLMInterface
+  (the ABC in src/vlm/interface.py). No stage talks to an SDK directly.
+  Switching vlm_backend: mock → anthropic in config/pipeline.yaml is the entire
+  swap — zero code changes. The debate models (AnthropicVLM, QwenVLM)
+  additionally implement critique_plan, which is separate from the four pipeline
+  methods.
+
+  Typed dataclasses only across module boundaries. src/models.py is the single
+  source of all data shapes for both layers. No bare dicts passed between
+  modules.
+
+  Drawing is monopolized by overlay.py. No pipeline stage or debate module draws
+  on images. Only src/visualization/overlay.py does, and every drawing function
+  returns a new PIL Image without mutating its input.
+
+  All tunables in config/pipeline.yaml. Hard-coding any numeric parameter in
+  src/ is a bug.
+
+  MockVLM is deterministic. numpy.random.default_rng(seed) for all randomness.
+  Tests are repeatable and free.
+
+  Debate relay semantics. Claude opens, Qwen responds seeing Claude's turn,
+  Claude responds seeing Qwen's, alternating up to max_rounds. Convergence =
+  latest verdicts match. Tie-break = most conservative verdict (reject > amend >
+  endorse). The orchestrator is the sole caller — models only ever see each
+  other's relayed text.
+
+  Gradio UI contains zero logic. It calls run_pipeline / run_viper and maps
+  results to display components. Nothing else.
+
+  Ready to build Phase 0.
+
+✻ Brewed for 12s
+
+※ recap: VIPER is a visual action planning system that fuses PIVOT and VLMPC, then validates plans through a Claude-Qwen debate. We confirmed the architecture and are ready to start Phase 0, scaffolding the full directory structure and Gradio shell. (disable recaps in /config)
+
+❯ We're doing Phase 0 (Scaffold) only. First, give me a plan: every             
+  file/directory you'll create per SPEC.md §4 and plan.md Phase 0,              
+  and why. Wait for my approval before writing anything.                        
+
+● Here is the complete Phase 0 file plan, nothing written yet.
+
+  ---
+  Phase 0 — Scaffold Plan
+
+  Directories (with __init__.py where they are Python packages)
+
+  ┌─────────────────────┬────────────────────────────────────────────────────┐
+  │        Path         │                        Why                         │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ src/                │ Root package for all source code                   │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ src/vlm/            │ VLM interface + implementations (mock, Anthropic,  │
+  │                     │ Qwen)                                              │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ src/pipeline/       │ The 7 GENERATE stages + runner                     │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ src/debate/         │ Artifact packaging, relay, verdict assembly        │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ src/visualization/  │ All image drawing                                  │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ tests/              │ All pytest tests (not a package, no __init__.py)   │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ assets/demo_images/ │ 3 demo scenario images (placeholder directory for  │
+  │                     │ now)                                               │
+  ├─────────────────────┼────────────────────────────────────────────────────┤
+  │ config/             │ YAML config (not a package, no __init__.py)        │
+  └─────────────────────┴────────────────────────────────────────────────────┘
+
+  Each of src/, src/vlm/, src/pipeline/, src/debate/, src/visualization/ gets an
+  __init__.py so they are importable as packages.
+
+  ---
+  Files
+
+  File: src/__init__.py
+  Why: Makes src a package
+  ────────────────────────────────────────
+  File: src/vlm/__init__.py
+  Why: Makes src.vlm a package
+  ────────────────────────────────────────
+  File: src/pipeline/__init__.py
+  Why: Makes src.pipeline a package
+  ────────────────────────────────────────
+  File: src/debate/__init__.py
+  Why: Makes src.debate a package
+  ────────────────────────────────────────
+  File: src/visualization/__init__.py
+  Why: Makes src.visualization a package
+  ────────────────────────────────────────
+  File: src/models.py
+  Why: All dataclasses for both layers: BoundingBox, SceneObject,
+    SceneUnderstanding, ActionCandidate, AnnotatedProposal, SelectedCandidates,
+    ActionSequence, PredictedOutcome, CostBreakdown, ActionPlan, DebateArtifact,
+
+    DebateTurn, DebateResult, ViperResult, PipelineConfig — exactly as specced
+  in
+     SPEC.md §5
+  ────────────────────────────────────────
+  File: config/pipeline.yaml
+  Why: All tunables from SPEC.md §6: pivot, vlmpc, cost, debate, visualization
+    blocks. debate.enabled: false
+  ────────────────────────────────────────
+  File: app.py
+  Why: Gradio shell: 6-tab layout (Scene Understanding, Proposal Iterations,
+  Cost
+    Analysis, Final Plan, Step-by-Step Plan, Debate & Verdict), each wired to a
+    stub function returning a placeholder. No logic — only layout.
+  ────────────────────────────────────────
+  File: pyproject.toml
+  Why: Package metadata + dependencies: gradio>=4.0, pillow, opencv-python,
+    numpy, pyyaml, anthropic, transformers, pytest, ruff
+  ────────────────────────────────────────
+  File: requirements.txt
+  Why: Flat list of the same deps, for environments that prefer pip over
+    pyproject
+  ────────────────────────────────────────
+  File: .env.example
+  Why: Single line: ANTHROPIC_API_KEY=
+
+  ---
+  What is deliberately NOT created in Phase 0
+
+  All stage files (perception.py, proposal.py, etc.), interface.py, mock_vlm.py,
+  overlay.py, and all test files are not created here. Phase 0 is skeleton only
+  — the gate is python app.py launches with 6 visible tabs and no import
+  errors. The real modules come in Phases 1–5.
+
+  ---
+  Total: 6 directories, 13 files.
+
+  Waiting for your approval before writing anything.
+
+✻ Brewed for 19s
+
+❯ Read plan.md and SPEC.md. Then create a skill at                              
+  .claude/skills/viper-phase-workflow/SKILL.md that encodes the                 
+  "How to work through this plan" loop and the phase-by-phase gates.            
+  The description should trigger whenever we start, finish, or                  
+  report on a build phase. Show me the SKILL.md before writing it.              
+
+● I already have both files in context. Here is the draft SKILL.md — review
+  before I write it.
+
+  ---
+  ---
+  description: >
+    Use this skill whenever a VIPER build phase is being started, completed,
+    or reported on — including phrases like "start Phase N", "Phase N is done",
+    "run the gate", "move to the next phase", or "report status".
+  ---
+
+  # VIPER Phase Workflow
+
+  ## The loop (repeat for every phase, in order)
+
+  1. **Read the gate first.** Before touching any code, state the current phase
+     number, its goal sentence, and its exact gate command/criterion from the
+     table below. Confirm the previous phase's gate already passed.
+
+  2. **Build the simplest thing that passes the gate.** Do not add features,
+     abstractions, or polish beyond what the gate requires. Items marked
+     `[OPTIONAL]` in plan.md are skipped until the entire system works
+     end-to-end.
+
+  3. **Run the gate command.** After implementation, execute the gate command
+     exactly as listed. Do not move on until it passes.
+
+  4. **Report status, then stop.** After the gate passes, output a short
+     status report (phase number, gate command used, pass/fail, any
+     notable decisions). Do not begin the next phase without explicit
+     user approval.
+
+  5. **Never start a phase until the previous phase's gate has passed.**
+
+  ---
+
+  ## Phase gates (canonical — SPEC.md §12 / plan.md)
+
+  | Phase | What | Gate command / criterion |
+  |-------|------|--------------------------|
+  | 0 | Scaffold | `python app.py` launches; all 6 tabs render placeholders; no
+  import errors |
+  | 1 | VLM interface + MockVLM | `pytest tests/test_mock_vlm.py` passes; same
+  seed → identical outputs |
+  | 2 | Visualization | `pytest tests/test_overlay.py` passes; all functions
+  return PIL Images |
+  | 3 | GENERATE pipeline | `pytest tests/` (all pipeline tests) pass;
+  `run_pipeline` returns a valid `ActionPlan` |
+  | 4 | Wire UI (debate off) | Browser: upload → goal → Run → Tabs 1–5 populated
+  in ~3 s on mock VLM |
+  | 5 | DEBATE on mocks | `pytest tests/test_relay.py tests/test_verdict.py`
+  pass; Tab 6 shows full mock debate; tie-break is the conservative verdict |
+  | 6 | Real model swap-in | Real Claude vision in GENERATE + Claude↔Qwen debate
+  produces a verdict end-to-end |
+  | 7 | Evaluation harness | `evaluate.py` over test set produces a RunSummary;
+  resumable after timeout |
+
+  ---
+
+  ## Hard rules — never violate regardless of phase
+
+  - All data shapes: `src/models.py` only. No bare dicts across module
+  boundaries.
+  - All VLM calls: through `VLMInterface` in `src/vlm/interface.py` only. No
+  direct SDK calls elsewhere.
+  - All image drawing: `src/visualization/overlay.py` only.
+  - All tunables: `config/pipeline.yaml` only. No hard-coded numbers in `src/`.
+  - Mock VLM: deterministic via `numpy.random.default_rng(seed)`. Tests must be
+  repeatable.
+  - Gradio `app.py`: no planning or debate logic — only calls to pipeline/debate
+  functions.
+  - Models never call each other in debate: the orchestrator is the sole caller.
+  - Ground truth: never shown to any model — used only for scoring.
+  - API keys: from env / Kaggle Secret only. Never a literal in code.
+
+  ---
+
+  ## Status report template
+
+  After each gate, output exactly this block:
+
+  Phase <N> status
+
+  Gate: <exact gate command>
+  Result: PASS | FAIL
+  Decisions: <any non-obvious choices made, or "none">
+  Next: awaiting approval to start Phase <N+1>
+
+
+  ---
+  Waiting for your approval before writing this to
+  .claude/skills/viper-phase-workflow/SKILL.md.
+
+✻ Worked for 36s
+
+❯ go ahead and write it                                                         
+
+  Listed 1 directory, ran 2 shell commands (ctrl+o to expand)
+
+● Write(~\.claude\skills\viper-phase-workflow\SKILL.md)
+  ⎿  Wrote 72 lines to ..\..\..\..\..\Users\BINAYAK\.claude\skills\viper-ph
+     ase-workflow\SKILL.md
+       1 ---
+       2 description: >
+       3   Use this skill whenever a VIPER build phase is being started, 
+       4   or reported on — including phrases like "start Phase N", "Phas
+         e N is done",
+       5   "run the gate", "move to the next phase", or "report status".
+       6 ---
+       7 
+       9 
+      10 ## The loop (repeat for every phase, in order)
+     … +86 lines (ctrl+o to expand)
+
+● Written to C:\Users\BINAYAK\.claude\skills\viper-phase-workflow\SKILL.md.
+
+  The skill will activate whenever we use language like "start Phase N", "Phase
+  N is done", "run the gate", or "report status" — and it will enforce the loop:
+  state the gate, build only what the gate needs, run it, report, stop. Ready
+  to proceed with Phase 0 on your say-so.
+
+✻ Cooked for 38s
+
+※ recap: VIPER is an AI planning system that generates and validates action plans from images. Phase 0 scaffold is approved and ready to build — waiting for the user to say go. (disable recaps in /config)
+
+❯ what are the hard rules of this project ?                                     
+
+● From the SKILL.md we just wrote (which pulls directly from SPEC.md §2 and
+  plan.md):
+
+  1. All data shapes from src/models.py only. No bare dicts across module
+  boundaries.
+  2. All VLM calls through VLMInterface only. No direct SDK calls anywhere
+  outside src/vlm/.
+  3. All image drawing through overlay.py only. No other module draws on images.
+  4. All tunables in config/pipeline.yaml only. Hard-coding any number in src/
+  is a bug.
+  5. Mock VLM is deterministic. numpy.random.default_rng(seed) for all
+  randomness — tests must be repeatable given a seed.
+  6. No logic in app.py. The Gradio UI only calls pipeline/debate functions —
+  zero planning or debate logic lives there.
+  7. Models never call each other in debate. The orchestrator is the sole
+  caller; Claude and Qwen only ever see each other's relayed text.
+  8. Ground truth is never shown to any model. Used only for scoring in eval
+  mode.
+  9. API keys from env / Kaggle Secret only. Never a literal string in code.
+  10. Qwen loads once and is reused. Never loaded per-task (Phase 6+).
+  11. Progressive save in evaluation. A session timeout must lose at most the
+  in-progress task — all completed results already on disk.
+  12. GENERATE must be fully testable before DEBATE is touched. The three layers
+  are independent; don't blur the boundary.
+
+✻ Cogitated for 9s
+
+❯ Good list. Write these 12 into CLAUDE.md in the project root as               
+  always-on invariants. Two constraints:                                        
+  - Don't restate the phase loop or gate sequence — that lives in the           
+    viper-phase-workflow skill. CLAUDE.md is rules that hold in every           
+    phase, not the build order.                                                 
+  - For rule 12, keep only the boundary principle ("GENERATE and                
+    DEBATE are independent; don't blur the layer boundary"). The                
+    "build GENERATE first" ordering stays in the skill.                         
+  Add a one-line header: SPEC.md is source of truth; if anything                
+  conflicts, SPEC.md wins. Show me the file before writing.                     
+
+● Here is the draft CLAUDE.md:
+
+  ---
+  # VIPER — Project Invariants
+
+  SPEC.md is source of truth; if anything here conflicts with SPEC.md, SPEC.md
+  wins.
+
+  ## Hard rules (hold in every phase, no exceptions)
+
+  1. **All data shapes from `src/models.py` only.** No bare dicts across module
+  boundaries.
+  2. **All VLM calls through `VLMInterface` only.** No direct SDK calls anywhere
+  outside `src/vlm/`.
+  3. **All image drawing through `overlay.py` only.** No other module draws on
+  images.
+  4. **All tunables in `config/pipeline.yaml` only.** Hard-coding any number in
+  `src/` is a bug.
+  5. **Mock VLM is deterministic.** `numpy.random.default_rng(seed)` for all
+  randomness — tests must be repeatable given a seed.
+  6. **No logic in `app.py`.** The Gradio UI only calls pipeline/debate
+  functions — zero planning or debate logic lives there.
+  7. **Models never call each other in debate.** The orchestrator is the sole
+  caller; Claude and Qwen only ever see each other's relayed text.
+  8. **Ground truth is never shown to any model.** Used only for scoring in eval
+  mode.
+  9. **API keys from env / Kaggle Secret only.** Never a literal string in code.
+  10. **Qwen loads once and is reused.** Never loaded per-task.
+  11. **Progressive save in evaluation.** A session timeout must lose at most
+  the in-progress task — all completed results already on disk.
+  12. **GENERATE and DEBATE are independent layers.** Do not blur the boundary —
+  DEBATE consumes only a `DebateArtifact`, never pipeline internals.
+
+  ---
+  Waiting for your approval before writing.
+
+✻ Sautéed for 10s
+
+❯ go ahead                                                                      
+
+● Write(CLAUDE.md)
+  ⎿  Error writing file
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+● A CLAUDE.md already exists with older content. I'll overwrite it with the
+  clean version we agreed on.
+
+● Write(CLAUDE.md)
+  ⎿  Added 15 lines, removed 26 lines
+       1 -# CLAUDE.md — VIPER project rules (always-on)                  
+       1 +# VIPER — Project Invariants                                   
+       2  
+       3 -> **Source of truth:** `SPEC.md` defines *what* to build and wh
+         -at "correct" means.                                            
+       4 -> `plan.md` defines execution order. **If anything conflicts, S
+         -PEC.md wins.**                                                 
+       5 -> The phase-by-phase build loop lives in the `viper-phase-workf
+         -low` skill — follow it.                                        
+       3 +SPEC.md is source of truth; if anything here conflicts with SPE
+         +C.md, SPEC.md wins.                                            
+       4  
+       7 -## Single source of truth (never duplicate logic)              
+       8 -- Data shapes come **only** from `src/models.py`. Every cross-m
+         -odule value is a dataclass — no bare dicts.                    
+       9 -- VLM calls go **only** through `src/vlm/interface.py` (`VLMInt
+         -erface`). No direct SDK calls outside `src/vlm/`.              
+      10 -- All drawing goes **only** through `src/visualization/overlay.
+         -py`. No other module draws.                                    
+      11 -- All tunables live in `config/pipeline.yaml`. No hard-coded nu
+         -mbers in `src/`.                                               
+       5 +## Hard rules (hold in every phase, no exceptions)             
+       6  
+      13 -## Hard rules (do not violate)                                 
+      14 -1. Models never call each other; the orchestrator is the sole c
+         -aller in the debate.                                           
+      15 -2. Ground truth is never shown to any model — scoring only.    
+      16 -3. Mock VLM is deterministic given a seed.                     
+      17 -4. Every VLM call goes through `VLMInterface`; no direct SDK ca
+         -lls outside `src/vlm/`.                                        
+      18 -5. All drawing goes through `overlay.py`; no other module draws
+         -.                                                              
+      19 -6. Every cross-module value is a dataclass from `models.py`; no
+         - bare dicts.                                                   
+      20 -7. All tunables live in `config/pipeline.yaml`; no hard-coded n
+         -umbers in `src/`.                                              
+      21 -8. Qwen loads once and is reused; never per-task.              
+      22 -9. API key from env / Kaggle Secret only; never a literal in co
+         -de.                                                            
+      23 -10. Progressive save in evaluation; a timeout loses at most the
+         - in-progress task.                                             
+      24 -                                                               
+      25 -## Build discipline                                            
+      26 -- One phase at a time. Never start a phase until the previous g
+         -ate passes.                                                    
+      27 -- Build the simplest thing that passes the gate. Skip `[OPTIONA
+         -L]` items until the base system works end-to-end.              
+      28 -- GENERATE (Layer 1) must run and be testable on the mock VLM b
+         -efore DEBATE (Layer 2) is touched.                             
+      29 -- Phases 0–5 run on the mock VLM, locally, free. Don't reach fo
+         -r real models before Phase 5 is stable.                        
+       7   No newline at end of file
+       8 +1. **All data shapes from `src/models.py` only.** No bare dicts
+         + across module boundaries.                                     
+       9 +2. **All VLM calls through `VLMInterface` only.** No direct SDK
+         + calls anywhere outside `src/vlm/`.                            
+      10 +3. **All image drawing through `overlay.py` only.** No other mo
+         +dule draws on images.                                          
+      11 +4. **All tunables in `config/pipeline.yaml` only.** Hard-coding
+         + any number in `src/` is a bug.                                
+      12 +5. **Mock VLM is deterministic.** `numpy.random.default_rng(see
+         +d)` for all randomness — tests must be repeatable given a seed.
+      13 +6. **No logic in `app.py`.** The Gradio UI only calls pipeline/
+         +debate functions — zero planning or debate logic lives there.  
+      14 +7. **Models never call each other in debate.** The orchestrator
+         + is the sole caller; Claude and Qwen only ever see each other's
+         + relayed text.                                                 
+      15 +8. **Ground truth is never shown to any model.** Used only for 
+         +scoring in eval mode.                                          
+      16 +9. **API keys from env / Kaggle Secret only.** Never a literal 
+         +string in code.                                                
+      17 +10. **Qwen loads once and is reused.** Never loaded per-task.  
+      18 +11. **Progressive save in evaluation.** A session timeout must 
+         +lose at most the in-progress task — all completed results alrea
+         +dy on disk.                                                    
+      19 +12. **GENERATE and DEBATE are independent layers.** Do not blur
+         + the boundary — DEBATE consumes only a `DebateArtifact`, never 
+         +pipeline internals.                                            
+
+● Written. The old CLAUDE.md had duplicated rules across two sections and mixed
+  in build-order guidance — the new version is the clean 12-rule list with
+  nothing else.
+
+✻ Cooked for 27s
+
+❯ What are the hard rules for this project?                                     
+
+● From CLAUDE.md in the project root:
+
+  1. All data shapes from src/models.py only. No bare dicts across module
+  boundaries.
+  2. All VLM calls through VLMInterface only. No direct SDK calls anywhere
+  outside src/vlm/.
+  3. All image drawing through overlay.py only. No other module draws on images.
+  4. All tunables in config/pipeline.yaml only. Hard-coding any number in src/
+  is a bug.
+  5. Mock VLM is deterministic. numpy.random.default_rng(seed) for all
+  randomness — tests must be repeatable given a seed.
+  6. No logic in app.py. The Gradio UI only calls pipeline/debate functions —
+  zero planning or debate logic lives there.
+  7. Models never call each other in debate. The orchestrator is the sole
+  caller; Claude and Qwen only ever see each other's relayed text.
+  8. Ground truth is never shown to any model. Used only for scoring in eval
+  mode.
+  9. API keys from env / Kaggle Secret only. Never a literal string in code.
+  10. Qwen loads once and is reused. Never loaded per-task.
+  11. Progressive save in evaluation. A session timeout must lose at most the
+  in-progress task — all completed results already on disk.
+  12. GENERATE and DEBATE are independent layers. Do not blur the boundary —
+  DEBATE consumes only a DebateArtifact, never pipeline internals.
+
+  And the overriding header: SPEC.md wins if anything conflicts.
+
+✻ Cogitated for 5s
+
+※ recap: VIPER is a visual AI planning system fusing PIVOT and VLMPC with a two-model debate layer. We've read the spec, written CLAUDE.md and the viper-phase-workflow skill. Next: your approval to begin writing Phase 0 code. (disable recaps in /config)
+
+❯ the Claude.md , SPEC.md and the plan.md is updated . Read CLAUDE.md, SPEC.md, 
+  and plan.md.                                                                  
+
+  Read 3 files (ctrl+o to expand)
+
+● I've read all three files. Here's what changed and what I now understand.
+
+  Major pivot from the original spec: VIPER is no longer static-image
+  manipulation planning — it's now video-based A→B trajectory planning. Key
+  shifts:
+
+  - Input: a video file, not a single image. A new Stage 0 (ingest/frames.py)
+  extracts frames via OpenCV before anything else runs.
+  - Goal format: "from {place_a} to {place_b}" — parsed into a start/destination
+  pair, not a free-form manipulation goal.
+  - New grounding stage: grounding/locate.py resolves place A/B/obstacles to
+  points, either from a hand-tagged data/zones.json (GROUNDING_MODE="pretagged",
+  offline) or via VLM (Phase 6 only).
+  - Entry point is now main.py (CLI), not app.py (Gradio) — Gradio is optional
+  and deferred to Phase 7.
+  - New key output: traversal.gif — a synthetic agent marker animated A→B over
+  the real video frames. Explicitly not robot control or real object tracking —
+  that's now a documented scope guardrail.
+  - Config moved from YAML to config.py (plain Python constants), and
+  src/models.py dataclasses changed substantially (Trajectory,
+  GroundedLocations, SimulationResult, etc., replacing the old
+  ActionCandidate/ActionSequence/PredictedOutcome set).
+  - Phase count and gates changed: 8 phases (0–7): Scaffold → Frame ingestion →
+  VLM interface/mock → Visualization+animation → GENERATE
+  (ground+PIVOT+VLMPC+traversal) → DEBATE on mocks → Real model swap-in →
+  Evaluation+optional UI. Different from the old 8-phase image-only plan.
+  - DEBATE layer logic is largely unchanged: same relay structure, same
+  conservative tie-break, same concession tracking, plus a new round1_solo field
+  recording each model's first-round verdict standalone.
+
+  CLAUDE.md now carries 16 hard rules (up from 12) — notably adds offline-first
+  (USE_VLM=False must always work, no network), streaming/downscaling video to
+  stay within 3GB RAM, and the grounding-is-a-discrete-stage rule.
+
+  Flag: the viper-phase-workflow skill I wrote earlier still encodes the old
+  phase gates (image-only, Gradio-first, 8 phases that don't match this new
+  plan.md). It's now stale and will misfire if invoked. Want me to update it to
+  match the new Phase 0–7 gates from this plan.md?
+
+✻ Churned for 27s
+
+❯ yes                                                                           
+
+● Here is the updated SKILL.md — diffing it against the file plan changes: phase
+  count went from 8 image-only phases to 8 phases with a new Frame Ingestion
+  phase inserted at position 1 (shifting everything after it), file names
+  changed (overlay.py→draw.py, config/pipeline.yaml→config.py), and I'm dropping
+  the skill's own "Hard rules" section since CLAUDE.md is now the sole owner of
+  those (and already diverged once — duplicating invites exactly that drift).
+
+  ---
+  ---
+  description: >
+    Use this skill whenever a VIPER build phase is being started, completed,
+    or reported on — including phrases like "start Phase N", "Phase N is done",
+    "run the gate", "move to the next phase", or "report status".
+  ---
+
+  # VIPER Phase Workflow
+
+  ## The loop (repeat for every phase, in order)
+
+  1. **Read the gate first.** Before touching any code, state the current phase
+     number, its goal sentence, and its exact gate command/criterion from the
+     table below. Confirm the previous phase's gate already passed.
+
+  2. **Build the simplest thing that passes the gate.** Do not add features,
+     abstractions, or polish beyond what the gate requires. Items marked
+     `[OPTIONAL]` in plan.md are skipped until the entire system works
+     end-to-end.
+
+  3. **Single sources of truth while building:** data shapes only from
+     `src/models.py`; VLM calls only through `src/vlm/interface.py`; drawing
+     only through `src/visualization/draw.py`; tunables only in `config.py`.
+
+  4. **Run the gate command.** After implementation, execute the gate command
+     exactly as listed. Do not move on until it passes.
+
+  5. **Report status, then stop.** After the gate passes, output a short
+     status report (phase number, gate command used, pass/fail, any
+     notable decisions). Do not begin the next phase without explicit
+     user approval.
+
+  6. **Never start a phase until the previous phase's gate has passed.**
+     GENERATE (Layer 1, Phases 1–4) must run and be testable on the
+     mock/offline VLM before DEBATE (Layer 2, Phase 5) is touched.
+
+  ---
+
+  ## Phase gates (canonical — SPEC.md §13 / plan.md)
+
+  | Phase | What | Gate command / criterion |
+  |-------|------|---------------------------|
+  | 0 | Scaffold + CLI | `pip install -r requirements.txt` succeeds; `python
+  main.py --help` prints options; no import errors |
+  | 1 | Frame ingestion (Stage 0) | `extract_frames` writes N PNGs to
+  `data/frames/` from a video; `--frames-dir --random` picks one; `pytest
+  tests/test_frames.py` passes |
+  | 2 | VLM interface + Mock/offline VLM | `pytest tests/test_mock_vlm.py`
+  passes; same seed → identical outputs |
+  | 3 | Visualization + animation | `pytest tests/test_draw.py` passes; a sample
+  GIF opens and shows motion |
+  | 4 | GENERATE: ground + PIVOT + VLM + VLMPC + traversal | `pytest tests/`
+  (pipeline) green; `python main.py --video <clip> --goal "from A to B"` writes
+  candidates.png, selected.png, trajectory.gif, traversal.gif, final.png,
+  log.json; traversal GIF shows an agent moving A→B over real footage |
+  | 5 | DEBATE layer (on mocks) | `pytest tests/test_relay.py
+  tests/test_verdict.py` pass; with `DEBATE_ENABLED=True` a `debate.txt`
+  (transcript + verdict + concessions) is written; deadlock yields the
+  conservative pick |
+  | 6 | Real model swap-in | with real keys + GPU, GENERATE runs on a real VLM
+  **and** the Claude↔Qwen debate produces a verdict end-to-end on at least one
+  frame |
+  | 7 | Evaluation + optional UI | a batch run produces a metrics summary and is
+  resumable; (optional) the UI demos a video end-to-end |
+
+  ---
+
+  ## Hard rules
+
+  Do not duplicate them here — `CLAUDE.md` in the project root is the single
+  source of truth for project invariants. Read it before every phase; if it
+  conflicts with SPEC.md, SPEC.md wins.
+
+  ---
+
+  ## Status report template
+
+  After each gate, output exactly this block:
+
+  Phase <N> status
+
+  Gate: <exact gate command>
+  Result: PASS | FAIL
+  Decisions: <any non-obvious choices made, or "none">
+  Next: awaiting approval to start Phase <N+1>
+
+
+  ---
+  Shall I write this to .claude/skills/viper-phase-workflow/SKILL.md?
+
+✻ Cogitated for 48s
+
+❯ yes                                                                           
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(~\.claude\skills\viper-phase-workflow\SKILL.md)
+  ⎿  Added 23 lines, removed 23 lines
+      18     `[OPTIONAL]` in plan.md are skipped until the entire system 
+          works
+      19     end-to-end.
+      20  
+      21 -3. **Run the gate command.** After implementation, execute the 
+         -gate command                                                   
+      21 +3. **Single sources of truth while building:** data shapes only
+         + from                                                          
+      22 +   `src/models.py`; VLM calls only through `src/vlm/interface.p
+         +y`; drawing                                                    
+      23 +   only through `src/visualization/draw.py`; tunables only in `
+         +config.py`.                                                    
+      24 +                                                               
+      25 +4. **Run the gate command.** After implementation, execute the 
+         +gate command                                                   
+      26     exactly as listed. Do not move on until it passes.
+      27  
+      24 -4. **Report status, then stop.** After the gate passes, output 
+         -a short                                                        
+      28 +5. **Report status, then stop.** After the gate passes, output 
+         +a short                                                        
+      29     status report (phase number, gate command used, pass/fail, a
+          ny
+      30     notable decisions). Do not begin the next phase without expl
+          icit
+      31     user approval.
+      32  
+      29 -5. **Never start a phase until the previous phase's gate has pa
+         -ssed.**                                                        
+      33 +6. **Never start a phase until the previous phase's gate has pa
+         +ssed.**                                                        
+      34 +   GENERATE (Layer 1, Phases 1–4) must run and be testable on t
+         +he                                                             
+      35 +   mock/offline VLM before DEBATE (Layer 2, Phase 5) is touched
+         +.                                                              
+      36  
+      37  ---
+      38  
+      33 -## Phase gates (canonical — SPEC.md §12 / plan.md)             
+      39 +## Phase gates (canonical — SPEC.md §13 / plan.md)             
+      40  
+      41  | Phase | What | Gate command / criterion |
+      36 -|-------|------|--------------------------|                    
+      37 -| 0 | Scaffold | `python app.py` launches; all 6 tabs render pl
+         -aceholders; no import errors |                                 
+      38 -| 1 | VLM interface + MockVLM | `pytest tests/test_mock_vlm.py`
+         - passes; same seed → identical outputs |                       
+      39 -| 2 | Visualization | `pytest tests/test_overlay.py` passes; al
+         -l functions return PIL Images |                                
+      40 -| 3 | GENERATE pipeline | `pytest tests/` (all pipeline tests) 
+         -pass; `run_pipeline` returns a valid `ActionPlan` |            
+      41 -| 4 | Wire UI (debate off) | Browser: upload → goal → Run → Tab
+         -s 1–5 populated in ~3 s on mock VLM |                          
+      42 -| 5 | DEBATE on mocks | `pytest tests/test_relay.py tests/test_
+         -verdict.py` pass; Tab 6 shows full mock debate; tie-break is th
+         -e conservative verdict |                                       
+      43 -| 6 | Real model swap-in | Real Claude vision in GENERATE + Cla
+         -ude↔Qwen debate produces a verdict end-to-end |                
+      44 -| 7 | Evaluation harness | `evaluate.py` over test set produces
+         - a RunSummary; resumable after timeout |                       
+      42 +|-------|------|---------------------------|                   
+      43 +| 0 | Scaffold + CLI | `pip install -r requirements.txt` succee
+         +ds; `python main.py --help` prints options; no import errors | 
+      44 +| 1 | Frame ingestion (Stage 0) | `extract_frames` writes N PNG
+         +s to `data/frames/` from a video; `--frames-dir --random` picks
+         + one; `pytest tests/test_frames.py` passes |                   
+      45 +| 2 | VLM interface + Mock/offline VLM | `pytest tests/test_moc
+         +k_vlm.py` passes; same seed → identical outputs |              
+      46 +| 3 | Visualization + animation | `pytest tests/test_draw.py` p
+         +asses; a sample GIF opens and shows motion |                   
+      47 +| 4 | GENERATE: ground + PIVOT + VLM + VLMPC + traversal | `pyt
+         +est tests/` (pipeline) green; `python main.py --video <clip> --
+         +goal "from A to B"` writes candidates.png, selected.png, trajec
+         +tory.gif, traversal.gif, final.png, log.json; traversal GIF sho
+         +ws an agent moving A→B over real footage |                     
+      48 +| 5 | DEBATE layer (on mocks) | `pytest tests/test_relay.py tes
+         +ts/test_verdict.py` pass; with `DEBATE_ENABLED=True` a `debate.
+         +txt` (transcript + verdict + concessions) is written; deadlock 
+         +yields the conservative pick |                                 
+      49 +| 6 | Real model swap-in | with real keys + GPU, GENERATE runs 
+         +on a real VLM **and** the Claude↔Qwen debate produces a verdict
+         + end-to-end on at least one frame |                            
+      50 +| 7 | Evaluation + optional UI | a batch run produces a metrics
+         + summary and is resumable; (optional) the UI demos a video end-
+         +to-end |                                                       
+      51  
+      52  ---
+      53  
+      48 -## Hard rules — never violate regardless of phase              
+      54 +## Hard rules                                                  
+      55  
+      50 -- All data shapes: `src/models.py` only. No bare dicts across m
+         -odule boundaries.                                              
+      51 -- All VLM calls: through `VLMInterface` in `src/vlm/interface.p
+         -y` only. No direct SDK calls elsewhere.                        
+      52 -- All image drawing: `src/visualization/overlay.py` only.      
+      53 -- All tunables: `config/pipeline.yaml` only. No hard-coded numb
+         -ers in `src/`.                                                 
+      54 -- Mock VLM: deterministic via `numpy.random.default_rng(seed)`.
+         - Tests must be repeatable.                                     
+      55 -- Gradio `app.py`: no planning or debate logic — only calls to 
+         -pipeline/debate functions.                                     
+      56 -- Models never call each other in debate: the orchestrator is t
+         -he sole caller.                                                
+      57 -- Ground truth: never shown to any model — used only for scorin
+         -g.                                                             
+      58 -- API keys: from env / Kaggle Secret only. Never a literal in c
+         -ode.                                                           
+      56 +Do not duplicate them here — `CLAUDE.md` in the project root is
+         + the single                                                    
+      57 +source of truth for project invariants. Read it before every ph
+         +ase; if it                                                     
+      58 +conflicts with SPEC.md, SPEC.md wins.                          
+      59  
+      60  ---
+      61  
+
+● Updated. The skill now matches the new 8-phase video-based plan, and hard
+  rules point to CLAUDE.md instead of duplicating it — so future CLAUDE.md edits
+  won't cause drift again. Ready for Phase 0 whenever you are.
+
+✻ Baked for 24s
+
+❯ Read SPEC.md, plan.md, and CLAUDE.md completely. Don't write any              
+  code yet. Confirm back to me: the 8 phases with their gates, and              
+  that the viper-phase-workflow skill plus CLAUDE.md invariants are             
+  loaded. We build one phase at a time, offline/mock for Phases 0–5.            
+
+● All three files are loaded and unchanged since my last read. Confirming back:
+
+  8 Phases and Gates (SPEC.md §13 / plan.md)
+
+  Phase: 0
+  What: Scaffold + CLI
+  Gate: pip install -r requirements.txt succeeds; python main.py --help prints
+    options; no import errors
+  ────────────────────────────────────────
+  Phase: 1
+  What: Frame ingestion (Stage 0)
+  Gate: extract_frames writes N PNGs to data/frames/ from a video; --frames-dir 
+    --random picks one; pytest tests/test_frames.py passes
+  ────────────────────────────────────────
+  Phase: 2
+  What: VLM interface + Mock/offline VLM
+  Gate: pytest tests/test_mock_vlm.py passes; same seed → identical outputs
+  ────────────────────────────────────────
+  Phase: 3
+  What: Visualization + animation
+  Gate: pytest tests/test_draw.py passes; a sample GIF opens and shows motion
+  ────────────────────────────────────────
+  Phase: 4
+  What: GENERATE: ground + PIVOT + VLM + VLMPC + traversal
+  Gate: pytest tests/ (pipeline) green; python main.py --video <clip> --goal 
+    "from A to B" writes candidates.png, selected.png, trajectory.gif,
+    traversal.gif, final.png, log.json; traversal GIF shows agent moving A→B
+  over
+     real footage
+  ────────────────────────────────────────
+  Phase: 5
+  What: DEBATE layer (on mocks)
+  Gate: pytest tests/test_relay.py tests/test_verdict.py pass; with
+    DEBATE_ENABLED=True a debate.txt (transcript+verdict+concessions) is
+  written;
+     deadlock yields the conservative pick
+  ────────────────────────────────────────
+  Phase: 6
+  What: Real model swap-in
+  Gate: with real keys+GPU, GENERATE runs on a real VLM and Claude↔Qwen debate
+    produces a verdict end-to-end on at least one frame
+  ────────────────────────────────────────
+  Phase: 7
+  What: Evaluation + optional UI
+  Gate: a batch run produces a metrics summary and is resumable; (optional) UI
+    demos a video end-to-end
+
+  Loaded and active
+
+  - viper-phase-workflow skill — encodes the phase loop (read gate → build
+  simplest thing that passes it → run gate → report status → stop for approval)
+  and the table above.
+  - CLAUDE.md invariants — 16 hard rules including: typed dataclasses only from
+  src/models.py, all VLM calls through VLMInterface, all drawing through
+  visualization/draw.py, all tunables in config.py, offline-first (USE_VLM=False
+  must always work, no network), GENERATE/DEBATE layer independence, Qwen
+  loaded once, no literal API keys, streaming/downscaling video for the 3GB RAM
+  constraint. SPEC.md wins on any conflict.
+
+  Build discipline confirmed: one phase at a time, gate must pass before
+  advancing, explicit approval required between phases. Phases 0–5 run entirely
+  offline on the mock/fallback VLM — no network, no GPU, no API key needed until
+  Phase 6.
+
+  No code written. Ready for your go-ahead to start Phase 0.
+
+✻ Cogitated for 17s
+
+❯ Phase 0 (Scaffold) only. Plan first, don't write yet: list every              
+  directory and file you'll create per SPEC 5 and plan.md Phase 0 —             
+  full tree with __init__.py, requirements.txt, config.py with ALL              
+  defaults from SPEC 7, src/models.py with EVERY dataclass from SPEC            
+  6 (both layers), and the main.py CLI shell (--video, --frames-dir,            
+  --goal, --frame N, --random, stubbed). Wait for my approval.                  
+
+● Phase 0 — Scaffold Plan
+
+  Directory tree (from SPEC.md §5, plan.md Phase 0)
+
+  VIPER/
+  ├── requirements.txt
+  ├── config.py
+  ├── main.py
+  ├── data/
+  │   ├── videos/
+  │   └── frames/
+  ├── src/
+  │   ├── __init__.py
+  │   ├── models.py
+  │   ├── ingest/__init__.py
+  │   ├── vlm/__init__.py
+  │   ├── pivot/__init__.py
+  │   ├── vlmpc/__init__.py
+  │   ├── debate/__init__.py
+  │   ├── visualization/__init__.py
+  │   └── evaluation/__init__.py
+  ├── outputs/
+  └── tests/
+
+  13 directories, 12 files (8 __init__.py + src/models.py + config.py +
+  requirements.txt + main.py).
+
+  Only directories + __init__.pys get created for each src/ subpackage — the
+  actual module files (frames.py, interface.py, mock_vlm.py, generator.py,
+  rollout.py, draw.py, metrics.py, etc.) are not written yet; those arrive in
+  Phases 1–7 per plan.md's explicit task lists. This matches "build the simplest
+  thing that passes the gate" — the Phase 0 gate only needs imports to resolve
+  cleanly, not the stages to exist.
+
+  ---
+  Two judgment calls — flagging before I proceed
+
+  1. src/grounding/locate.py is referenced in SPEC.md §8.0b and built in plan.md
+  Phase 4, but it's absent from the §5 repository-layout tree. I will not
+  scaffold src/grounding/ in Phase 0 — plan.md's Phase 4 task list creates it
+  then. Flagging in case you want it pre-scaffolded now instead.
+  2. README.md appears in the §5 tree but is not in plan.md's explicit Phase 0
+  task list, and the Phase 0 gate doesn't require it. I'll skip it for now; the
+  "Honest Scope Notes" content (§16) has nowhere to land until a phase actually
+  asks for it. Flag if you'd rather stub it now.
+
+  ---
+  requirements.txt
+
+  Exact list from plan.md Phase 0 / SPEC.md §4:
+  opencv-python, pillow, imageio, numpy, matplotlib, anthropic, transformers, 
+  gradio, pytest, ruff
+
+  ---
+  config.py — every constant from SPEC.md §7, verbatim, grouped by comment 
+  headers as in the spec:
+
+  - Frame ingestion: FRAME_STRIDE=15, MAX_FRAMES=20
+  - Location grounding: GROUNDING_MODE="pretagged",
+  PRETAG_FILE="data/zones.json"
+  - Traversal animation: TRAVERSAL_FRAMES=12, TRAVERSAL_OVERLAY=True
+  - PIVOT: NUM_CANDIDATES=5, MAX_TRAJECTORY_LEN=10, SEED=42
+  - VLM (pipeline): USE_VLM=False, VLM_BACKEND="mock",
+  CLAUDE_MODEL="claude-sonnet-4-6"
+  - VLMPC cost: COLLISION_PENALTY=100.0, PATH_LENGTH_WEIGHT=1.0,
+  GOAL_DISTANCE_WEIGHT=1.0
+  - DEBATE: DEBATE_ENABLED=False, DEBATE_MAX_ROUNDS=3, DEBATE_MODEL_A="claude",
+  DEBATE_MODEL_B="qwen", DEBATE_CLAUDE_MODEL="claude-sonnet-4-6",
+  QWEN_MODEL_ID="Qwen/Qwen2.5-VL-7B-Instruct", QWEN_QUANTIZATION="4bit",
+  PARSE_RETRY=1
+  - Visualization: COLOR_CANDIDATE, COLOR_SELECTED, COLOR_REJECTED,
+  COLOR_OBSTACLE, COLOR_GOAL (RGB tuples), ARROW_THICKNESS=2, GIF_FPS=5
+
+  No values changed, no extras added.
+
+  ---
+  src/models.py — every dataclass from SPEC.md §6, both layers:
+
+  Shared: Point, Trajectory, SceneObject, SceneUnderstanding, GroundedLocations
+
+  Layer 1 — GENERATE: AnnotatedProposal, SelectedCandidates, SimulationResult,
+  CostBreakdown, ActionPlan
+
+  Layer 2 — DEBATE: DebateArtifact, DebateTurn, DebateResult
+
+  Top-level: ViperResult
+
+  All fields, types, and defaults copied exactly as specced (e.g. Point.x/y
+  normalised floats, ActionPlan.traversal_gif_path: str,
+  DebateResult.round1_solo: dict, etc.) — no field added or omitted.
+
+  ---
+  main.py — CLI shell
+
+  argparse with:
+  - --video PATH — run the full extract→plan→animate flow on a video
+  - --frames-dir PATH — skip extraction, operate on already-extracted frames
+  - --goal STR — instruction string, e.g. "from receiving bay to dock 4"
+  - --frame N — pick a specific frame index (vs. random)
+  - --random — pick a random already-extracted frame (used with --frames-dir)
+
+  Each handler is a stub (prints what it would do / raises NotImplementedError
+  placeholder) — no pipeline logic. Gate: python main.py --help prints all five
+  options with no import errors.
+
+  ---
+  Waiting for your approval (and your call on the two flagged items) before
+  writing anything.
+
+✻ Cooked for 1m 15s
+
+❯ yep go ahead                                                                  
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Clean slate aside from the three docs. Creating the directory tree first.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Directories created. Now the __init__.py files.
+
+● Write(src\__init__.py)  ⎿  Wrote 1 lines to src\__init__.py
+      1 (No content)
+
+● Write(src\ingest\__init__.py)
+  ⎿  Wrote 1 lines to src\ingest\__init__.py
+      1 (No content)
+
+● Write(src\vlm\__init__.py)
+  ⎿  Wrote 1 lines to src\vlm\__init__.py
+      1 (No content)
+
+● Write(src\pivot\__init__.py)
+  ⎿  Wrote 1 lines to src\pivot\__init__.py
+      1 (No content)
+
+● Write(src\vlmpc\__init__.py)
+  ⎿  Wrote 1 lines to src\vlmpc\__init__.py
+      1 (No content)
+
+● Write(src\debate\__init__.py)
+  ⎿  Wrote 1 lines to src\debate\__init__.py
+      1 (No content)
+
+● Write(src\visualization\__init__.py)
+  ⎿  Wrote 1 lines to src\visualization\__init__.py
+      1 (No content)
+
+● Write(src\evaluation\__init__.py)
+  ⎿  Wrote 1 lines to src\evaluation\__init__.py
+      1 (No content)
+
+● Now requirements.txt, config.py, src/models.py, and main.py.
+
+● Write(requirements.txt)
+  ⎿  Wrote 10 lines to requirements.txt
+       1 opencv-python
+       2 pillow
+       3 imageio
+       4 numpy
+       5 matplotlib
+       6 anthropic
+       7 transformers
+       8 gradio
+       9 pytest
+      10 ruff
+
+● Write(config.py)
+  ⎿  Wrote 47 lines to config.py
+      1 # All tunable parameters. Edit here — never hard-code in src/.
+      2 
+      3 # ---- frame ingestion ----
+        s
+      5 MAX_FRAMES          = 20        # cap on extracted frames
+      6 
+      7 # ---- location grounding ----
+      8 GROUNDING_MODE      = "pretagged"   # "pretagged" (offline) | "vl
+      9 PRETAG_FILE         = "data/zones.json"  # per-clip labeled A/B/o
+        bstacle regions
+     … +43 lines (ctrl+o to expand)
+
+● Write(src\models.py)
+  ⎿  Wrote 134 lines to src\models.py
+       1 from dataclasses import dataclass
+       2 from typing import Optional
+       3 from PIL import Image
+       4 
+       5 
+       6 # ---------- shared ----------
+       7 
+       8 @dataclass
+       9 class Point:
+      10     x: float        # normalised [0,1]
+     … +132 lines (ctrl+o to expand)
+
+● Write(main.py)
+  ⎿  Wrote 34 lines to main.py
+       1 import argparse
+       2 
+       3 
+       5     parser = argparse.ArgumentParser(
+       6         description="VIPER — Verifiable Iterative Planning with 
+         Ensemble Reasoning"
+       7     )
+       8     parser.add_argument("--video", type=str, default=None,
+         frames, then plans + animates the traversal")
+      10     parser.add_argument("--frames-dir", type=str, default=None,
+     … +32 lines (ctrl+o to expand)
+
+● Now running the gate.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● --help works, but the em-dash in the description is mis-encoding on the
+  Windows console. Fixing that for clean output.
+
+● Update(main.py)
+  ⎿  Added 1 line, removed 1 line
+      3  
+      4  def build_parser() -> argparse.ArgumentParser:
+      5      parser = argparse.ArgumentParser(
+      6 -        description="VIPER — Verifiable Iterative Planning with 
+        -Ensemble Reasoning"                                             
+      6 +        description="VIPER - Verifiable Iterative Planning with 
+        +Ensemble Reasoning"                                             
+      7      )
+      8      parser.add_argument("--video", type=str, default=None,
+      9                           help="path to an input video; extracts 
+         frames, then plans + animates the traversal")
+
+● Now installing dependencies and re-checking the gate, plus confirming
+  src.models imports cleanly (Pillow being the dependency that matters there).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Install succeeded but the output was truncated — let me verify all required
+  packages, including transformers, pillow, numpy, matplotlib, and pytest,
+  actually resolved.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All dependencies resolved. Now the gate check: python main.py --help and a
+  clean import of src.models.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 14 dataclasses import cleanly and the CLI prints help correctly. Gate
+  passed.
+
+  Phase 0 status
+
+  Gate: pip install -r requirements.txt && python main.py --help
+  Result: PASS
+  Decisions: skipped src/grounding/ (deferred to Phase 4 per plan.md) and
+  README.md (not in Phase 0's task list); fixed an em-dash in main.py's
+  description that broke on the Windows console encoding
+  Next: awaiting approval to start Phase 1 (Frame ingestion)
+
+✻ Cogitated for 3m 1s
+● Unknown command: /git. Did you mean /exit?
+
+● Args from unknown skill: comit "phase 0 commited"
+
+❯ git comit "phase 0 commited"                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● This directory isn't a git repository yet. Want me to run git init first, then
+  commit?
+
+● User answered Claude's questions:
+  ⎿  · VIPER isn't a git repo yet. Initialize one now so Phase 0 can be 
+     committed? → Yes, git init then commit (Recommended)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● __pycache__ files got picked up — unstaging those and adding a .gitignore
+  before committing.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(.gitignore)
+  ⎿  Wrote 11 lines to .gitignore
+       1 __pycache__/
+       2 *.pyc
+       3 .venv/
+       4 venv/
+       5 *.egg-info/
+       6 outputs/*
+       7 !outputs/.gitkeep
+       8 data/frames/*
+       9 !data/frames/.gitkeep
+      10 data/videos/*
+     … +1 line (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Staged cleanly now. Committing with your message.
+
+  Committed 6aba90c (ctrl+o to expand)
+
+● Committed as 6aba90c "phase 0 commited" — 19 files, root commit on master.
+  Initialized git for the project, added a .gitignore (excludes __pycache__,
+  ignores generated content in data/frames/, data/videos/, outputs/ while
+  keeping the dirs tracked via .gitkeep). Ready for Phase 1 when you are.
+
+✻ Baked for 1m 7s
+
+❯ Phase 1 (Frame ingestion) only. Re-read plan.md Phase 1 and the               
+  relevant SPEC section. Plan the files first: src/ingest/frames.py             
+  (extract_frames via cv2.VideoCapture, streaming frame-by-frame —              
+  honor CLAUDE.md rule 16, never load whole video), wire main.py                
+  --video and --frames-dir --random, and tests/test_frames.py with a            
+  tiny synthetic video. Wait for approval before coding.                        
+
+● I re-read plan.md Phase 1 and SPEC.md §2 / §8.0. Here's the plan — no code
+  yet.
+
+  ---
+  Phase 1 — Frame Ingestion Plan
+
+  src/ingest/frames.py — two functions
+
+  1. extract_frames(video_path: str, frame_stride: int, max_frames: int, 
+  output_dir: str = "data/frames") -> list[str]
+
+  - Open with cv2.VideoCapture(video_path).
+  - Loop cap.read() one frame at a time — never call anything that buffers the
+  whole video (e.g. no reading all frames into a list first). This satisfies
+  CLAUDE.md rule 16.
+  - Track a raw frame counter i; save when i % frame_stride == 0; stop once
+  max_frames have been saved; release the capture immediately after.
+  - Write PNGs as frame_0001.png, frame_0002.png, ... to output_dir (zero-padded
+  to 4 digits, matching SPEC's example).
+  - Idempotent overwrite: before writing, delete any existing frame_*.png
+  already in output_dir (but never touch .gitkeep), so a re-run with different
+  frame_stride/max_frames doesn't leave stale extra files behind.
+  - output_dir defaults to data/frames (matching SPEC's fixed path) but is
+  overridable — needed so the test can extract into a temp directory instead of
+  polluting the real one.
+  - Returns the list of written file paths in order.
+
+  2. list_frames(frames_dir: str = "data/frames") -> list[str]
+
+  - Not in SPEC's component contract, but needed by main.py to support
+  --frames-dir --random / --frame N without putting that selection logic inside
+  frames.py's extraction contract. Returns a sorted list of existing frame_*.png
+  paths. Pure helper, no video logic.
+
+  ---
+  Flag before I code: downscaling
+
+  CLAUDE.md rule 16 says "stream and downscale" video frames, but SPEC §7
+  (config.py) and §8.0's extract_frames signature define no downscale parameter
+  — this looks like CLAUDE.md got ahead of SPEC.md on this point. Streaming
+  (never loading the whole video) is unambiguous and I'll do it regardless. For
+  downscaling, I see two options:
+
+  ---
+  main.py wiring
+
+  - --video PATH [--goal ...]: calls extract_frames(path, config.FRAME_STRIDE, 
+  config.MAX_FRAMES), prints how many frames were written. If --goal was also
+  passed, prints/raises that planning isn't implemented until Phase 4
+  (extraction itself is real, planning stays stubbed).
+  - --frames-dir DIR --random: calls list_frames(DIR), picks one via
+  random.choice, prints the selected path.
+  - --frames-dir DIR --frame N: same listing, indexes into the sorted list
+  instead.
+  - Guard: error out if both --video and --frames-dir are given, or if
+  --frames-dir is given without --random/--frame.
+
+  ---
+  tests/test_frames.py
+
+  - Build a tiny synthetic video in a tmp_path using cv2.VideoWriter (e.g. 30
+  frames, each a distinct solid color so sampled frames are verifiably
+  distinct).
+  - extract_frames(video, frame_stride=5, max_frames=4, 
+  output_dir=tmp_path/"frames") → assert exactly 4 files returned, all exist,
+  are valid PNGs (openable via PIL.Image.open), named
+  frame_0001.png...frame_0004.png.
+  - Re-run with a smaller max_frames on the same output_dir → assert stale files
+  from the first run are gone (idempotency check).
+  - list_frames(output_dir) → assert it returns the same sorted set.
+
+  ---
+  Waiting on your call on the downscale question, then I'll proceed to code.
+
+✻ Baked for 1m 30s
+
+❯ okay                                                                          
+
+● I owe you an apology — I flagged the downscale question but never actually
+  listed the two options in my message. Let me ask properly now.
+
+● User answered Claude's questions:
+  ⎿  · CLAUDE.md rule 16 says to downscale frames too, but SPEC.md's 
+     extract_frames contract has no downscale parameter. How should Phase 1 
+     handle this? → Skip downscaling for now (Recommended)
+
+● Skipping downscaling for now — streaming frame-by-frame already satisfies the
+  "never load whole video" part of rule 16, and we'll stick to SPEC's exact
+  3-arg contract. Proceeding to code Phase 1.
+
+● Write(src\ingest\frames.py)
+  ⎿  Wrote 33 lines to src\ingest\frames.py
+       1 import glob
+       2 import os
+       4 import cv2
+       5 
+       6 
+         s: int,
+       8                     output_dir: str = "data/frames") -> list[str
+         ]:
+      10     for stale in glob.glob(os.path.join(output_dir, "frame_*.png
+         ")):
+     … +26 lines (ctrl+o to expand)
+
+● Now wiring main.py.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(main.py)
+  ⎿  Added 4 lines
+       1  import argparse
+       2 +import random                                                  
+       3  
+       4 +import config                                                  
+       5 +from src.ingest.frames import extract_frames, list_frames      
+       6  
+       7 +                                                               
+       8  def build_parser() -> argparse.ArgumentParser:
+       9      parser = argparse.ArgumentParser(
+      10          description="VIPER - Verifiable Iterative Planning with
+           Ensemble Reasoning"
+
+● Update(main.py)
+  ⎿  Added 20 lines, removed 2 lines
+      26      parser = build_parser()
+      27      args = parser.parse_args()
+      28  
+      29 +    if args.video and args.frames_dir:                         
+      30 +        parser.error("use either --video or --frames-dir, not b
+         +oth")                                                          
+      31 +                                                               
+      32      if args.video:
+      30 -        raise NotImplementedError("video ingestion arrives in P
+         -hase 1")                                                       
+      33 +        frame_paths = extract_frames(args.video, config.FRAME_S
+         +TRIDE, config.MAX_FRAMES)                                      
+      34 +        print(f"Extracted {len(frame_paths)} frames to data/fra
+         +mes/")                                                         
+      35 +        if args.goal:                                          
+      36 +            raise NotImplementedError("planning pipeline arrive
+         +s in Phase 4")                                                 
+      37 +        return                                                 
+      38 +                                                               
+      39      if args.frames_dir:
+      32 -        raise NotImplementedError("frame selection arrives in P
+         -hase 1")                                                       
+      40 +        frames = list_frames(args.frames_dir)                  
+      41 +        if not frames:                                         
+      42 +            parser.error(f"no frames found in {args.frames_dir}
+         +")                                                             
+      43 +        if args.random:                                        
+      44 +            chosen = random.choice(frames)                     
+      45 +        elif args.frame is not None:                           
+      46 +            chosen = frames[args.frame]                        
+      47 +        else:                                                  
+      48 +            parser.error("--frames-dir requires --random or --f
+         +rame N")                                                       
+      49 +        print(f"Selected frame: {chosen}")                     
+      50 +        return                                                 
+      51  
+      52      parser.print_help()
+      53  
+
+● Now the test file.
+● Write(tests\test_frames.py)
+  ⎿  Wrote 69 lines to tests\test_frames.py
+       1 import os
+       2 
+       3 import cv2
+       4 import numpy as np
+       5 from PIL import Image
+       7 from src.ingest.frames import extract_frames, list_frames
+       8 
+       9 
+      10 def make_synthetic_video(path: str, num_frames: int = 30, size: 
+         tuple[int, int] = (64, 48)) -> None:
+     … +66 lines (ctrl+o to expand)
+
+● Now running the gate.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The color test failed — all sampled frames show red=0, suggesting the
+  synthetic video's color data isn't surviving the encode/decode round-trip. Let
+  me debug the codec directly.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Found it — classic OpenCV BGR/RGB channel-order trap: I set color in
+  array-channel-0 but cv2.imwrite swaps to RGB for PNG output, so my "red" value
+  lands in the PNG's blue channel instead. The codec itself is fine (confirmed
+  above). Fixing the test by using a uniform gray value across all channels so
+  channel order can't matter.
+
+● Update(tests\test_frames.py)
+  ⎿  Added 2 lines, removed 2 lines
+      11      width, height = size
+      12      writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4
+          v"), 10, (width, height))
+      13      for i in range(num_frames):
+      14 -        color = (i * 8 % 256, 0, 0)                            
+      15 -        frame = np.full((height, width, 3), color, dtype=np.uin
+         -t8)                                                            
+      14 +        gray = i * 8 % 256                                     
+      15 +        frame = np.full((height, width, 3), gray, dtype=np.uint
+         +8)                                                             
+      16          writer.write(frame)
+      17      writer.release()
+      18  
+
+● Update(tests\test_frames.py)
+  ⎿  Added 4 lines, removed 4 lines
+      40  
+      41      paths = extract_frames(video_path, frame_stride=5, max_fram
+          es=4, output_dir=output_dir)
+      42  
+      43 -    red_values = []                                            
+      43 +    gray_values = []                                           
+      44      for p in paths:
+      45 -        img = np.array(Image.open(p).convert("RGB"))           
+      46 -        red_values.append(int(img[0, 0, 0]))                   
+      47 -    assert len(set(red_values)) == 4                           
+      45 +        img = np.array(Image.open(p).convert("L"))             
+      46 +        gray_values.append(int(img[0, 0]))                     
+      47 +    assert len(set(gray_values)) == 4                          
+      48  
+      49  
+      50  def test_extract_frames_is_idempotent_on_rerun(tmp_path):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 4 tests pass. Now checking the manual CLI gate from plan.md: --video
+  extraction and --frames-dir --random selection.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● CLI gate confirmed: --video extracts (3 frames from a 40-frame clip at
+  stride=15, matching expected math), --frames-dir --random and --frame N both
+  select correctly. Cleaning up the manual test artifacts now (gitignored
+  anyway, but tidy is better).
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● .gitkeep files intact. Gate fully passed.
+
+  Phase 1 status
+
+  Gate: pytest tests/test_frames.py + manual --video/--frames-dir 
+  --random/--frame N checks
+  Result: PASS
+  Decisions:
+  - Added optional output_dir param to extract_frames (defaults to data/frames,
+  overridable for test isolation) — keeps SPEC's 3-required-arg contract intact.
+  - Added list_frames() helper (not in SPEC's contract) so main.py owns
+  frame-selection logic rather than burying it in the ingestion module.
+  - Skipped downscaling per your call — streaming-only satisfies CLAUDE.md rule
+  16's memory concern; SPEC's contract has no downscale param.
+  - Hit and fixed an OpenCV BGR/RGB channel-swap gotcha in the test's synthetic
+  video generator (cv2.imwrite swaps channels for PNG output) — switched to
+  uniform-gray test frames so channel order can't cause false failures.
+
+  Next: awaiting approval to start Phase 2 (VLM interface + Mock/offline VLM).
+
+✻ Crunched for 2m 50s
+
+❯ pytest tests/test_frames.py                                                   
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 4 tests pass. Phase 1 gate still holds.
+
+✻ Sautéed for 11s
+
+❯ git comit "Phase 1 comitted"                                                  
+
+  Committed 4d71c39, ran 2 shell commands (ctrl+o to expand)
+
+● Committed as 4d71c39 "Phase 1 comitted" — main.py, src/ingest/frames.py,
+  tests/test_frames.py. Ready for Phase 2 when you are.
+
+✻ Cogitated for 24s
