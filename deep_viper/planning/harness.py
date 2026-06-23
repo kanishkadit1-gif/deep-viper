@@ -9,7 +9,8 @@ from langchain_openai import ChatOpenAI
 from deep_viper.config import Config
 from deep_viper.scene.state import SceneState, SceneObject
 from deep_viper.memory.causal import CausalMemory
-from deep_viper.planning.task_planner import plan_tasks, SubTask
+from deep_viper.domain import SubTask
+from deep_viper.planning.task_planner import plan_tasks
 from deep_viper.planning.plan_validator import validate_and_expand
 from deep_viper.planning.trajectory_agent import run_trajectory, TrajectoryState
 from deep_viper.vlm.client import build_llm

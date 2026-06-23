@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -7,14 +6,7 @@ from deep_viper.scene.renderer import load_scene_image, image_to_base64
 from deep_viper.vlm.client import extract_json
 from deep_viper.vlm.prompts import task_planning_prompt
 from deep_viper.planning.conflict import SimulatedScene
-
-
-@dataclass
-class SubTask:
-    step: int
-    op: str       # move_to | pick | place
-    args: dict
-    stack_onto: int | None = None  # if set, exclude this obj_id from obstacles for this move_to
+from deep_viper.domain import SubTask, Plan
 
 
 def plan_tasks(goal: str, state: SceneState, llm: ChatOpenAI) -> tuple[list[SubTask], str]:

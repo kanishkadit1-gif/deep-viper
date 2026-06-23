@@ -1,66 +1,8 @@
 # Deep VIPER v2 — System Specification
-**Version:** 6.0
-**Date:** 2026-06-23
-**Status:** Modular pipeline re-architecture + multi-turn sessions (in progress)
-**Previous versions:** spec_v5.0.md, spec_v4.3.md, spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
-
----
-
-## Changelog from v5.0 — Modular Pipeline Architecture
-
-v5.0's `harness.run_session` was a ~400-line god-function fusing scene loading,
-VLM planning, the approval gate, execution, IK, rendering, logging, AND the
-session lifecycle. That made subsystems un-pluggable (you couldn't do
-"coords → trajectory → render" without invoking the whole VLM chat pipeline) and
-left session/world state split across harness + bridge + web/server.
-
-v6.0 re-architects into **independent pipeline stages with typed I/O**, a thin
-**Session orchestrator** (multi-turn, owns world state + transcript), and
-**drivers** (CLI/web) on top. Each stage is callable headless — no VLM, no web.
-
-### Layered architecture (dependencies point downward only)
-```
- L4  drivers/        CLI (run.py) · Web (web/server.py)   — thin, swappable
- L3  session/        Session (multi-turn orchestrator), SessionStore, events, bridge
- L2  pipeline/       Stage contracts + the full Pipeline (goal → render)
-       ├─ planning   TaskPlanner  (goal+scene+history → Plan)         [VLM]
-       ├─ routing    TrajectoryPlanner (move → waypoints)             [VLM+geometry]
-       ├─ kinematics IKStage (waypoints → joint_trajectory)           [pure]
-       └─ rendering  Renderer (gif / blender video)                   [pure/blender]
- L1  domain/         SceneState, Plan, SubTask, Waypoints, JointTrajectory,
-                     CommittedPath  — pure dataclasses, the shared vocabulary
- L0  primitives/     geometry · projection · workspace · ik_solver · vlm client
-                     — pure compute, zero project deps beyond domain
-```
-**Rule:** a layer may import only from layers below it. No upward or sideways
-imports between siblings. The planner never imports the renderer (v5.0 bug).
-
-### Pluggable entry points (headless, no web/VLM where noted)
-- `Pipeline.from_goal(goal, scene, ...)` → full run (current behavior, one call).
-- `Pipeline.execute_plan(plan, scene, ...)` → run a structured Plan, **no VLM planner**.
-- `TrajectoryPlanner.plan_move(start, goal, obstacles)` → waypoints (pure routing).
-- `IKStage.solve(waypoints_3d, scene)` → joint trajectory (**pure**, no VLM).
-- `Renderer.render(committed_paths | joint_trajectory)` → gif/video (**pure**).
-
-Every stage takes a typed input dataclass and returns a typed output dataclass,
-so an external system can import one stage and plug in its own coords.
-
-### Multi-turn sessions (reopened == live)
-A **Session** owns the scene, the **evolving world state** (object positions +
-arm pos, updated after each turn), a **transcript** (per-turn goal→outcome),
-and causal memory. A *turn* = one instruction → plan → execute. Reopening a
-saved session reconstructs a fully runnable Session (scene reloaded, world state
-applied, transcript loaded) — so it accepts new instructions exactly like a live
-one, and the planner sees prior turns as context. The live-vs-persisted split is
-resolved by one `SessionStore.get(sid)` (the v5.x web/server had 6 ad-hoc
-`SESSIONS.get` sites; now one resolver, intent-explicit: control vs data access).
-
-### Event/control unchanged in spirit
-The `SessionController` event/control contract (v5.0) is retained and becomes the
-seam between L3 (session) and L2 (pipeline): stages emit events + honor control
-through the controller; NoOp = headless. This is what keeps stages driver-agnostic.
-
----
+**Version:** 5.0
+**Date:** 2026-06-22
+**Status:** Archived — superseded by spec.md (v6.0)
+**Previous versions:** spec_v4.3.md, spec_v4.2.md, spec_v4.1.md, spec_v4.md, spec_v3.1.md, spec_v3.md, spec_v2.md, spec_v1.md
 
 ---
 

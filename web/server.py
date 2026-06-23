@@ -33,14 +33,48 @@ REPO = Path(__file__).resolve().parent.parent
 SCENES_DIR = REPO / "data" / "blender" / "scenes"
 RUNS_DIR = REPO / "runs"
 UPLOADS_DIR = REPO / "data" / "uploads"
+SESSIONS_STORE = RUNS_DIR / "_sessions"   # persisted session records (replay/resume)
 FRONTEND_DIST = REPO / "web" / "frontend" / "dist"
 
 app = FastAPI(title="Deep VIPER Co-Pilot")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
 
-# Active sessions by id
+# --------------------------------------------------------------------------- #
+# Session registry — ONE place to resolve a session id, so every endpoint
+# treats live (in-memory) and persisted (on-disk) sessions consistently.
+#
+#   live_session(sid)    -> the in-memory handle or None. Use for CONTROL
+#                           (message/action): a dead session has no control
+#                           queue, so None correctly means "not controllable".
+#   resolve_session(sid) -> live handle, else a handle rehydrated from the
+#                           persisted record (and registered). Use for DATA /
+#                           render / websocket: these work on any session.
+# --------------------------------------------------------------------------- #
 SESSIONS: dict[str, SessionHandle] = {}
+
+
+def live_session(sid: str) -> SessionHandle | None:
+    return SESSIONS.get(sid)
+
+
+def resolve_session(sid: str) -> SessionHandle | None:
+    h = SESSIONS.get(sid)
+    if h is not None:
+        return h
+    rec_path = SESSIONS_STORE / f"{sid}.json"
+    if not rec_path.exists():
+        return None
+    rec = json.loads(rec_path.read_text())
+    h = SessionHandle(session_id=sid)
+    h.goal = rec.get("goal", "")
+    h.status = rec.get("status", "done")
+    h.dataset_path = rec.get("dataset_path", "")
+    h.blend_path = rec.get("blend_path", "")
+    h.run_dir = rec.get("run_dir", "")
+    h.history = rec.get("events", [])
+    SESSIONS[sid] = h   # register so WS / render can attach
+    return h
 
 
 # --------------------------------------------------------------------------- #
@@ -196,15 +230,13 @@ async def start_session(body: dict):
     return {"session_id": sid, "status": "running"}
 
 
-SESSIONS_STORE = RUNS_DIR / "_sessions"
-
-
 def _persist_session(sid, handle, goal, dataset_path, vlm):
     """Save a session's full event history for later replay/resume."""
     try:
         SESSIONS_STORE.mkdir(parents=True, exist_ok=True)
         (SESSIONS_STORE / f"{sid}.json").write_text(json.dumps({
             "session_id": sid, "goal": goal, "dataset_path": dataset_path,
+            "blend_path": handle.blend_path, "run_dir": handle.run_dir,
             "vlm": vlm, "status": handle.status, "events": handle.history,
         }, indent=2))
     except Exception:
@@ -227,32 +259,29 @@ def list_saved_sessions():
 
 @app.get("/api/session/{sid}/events")
 def get_session_events(sid: str):
-    """Replay: return a finished session's recorded events (from memory or disk)."""
-    h = SESSIONS.get(sid)
-    if h and h.history:
-        return {"session_id": sid, "status": h.status, "events": h.history}
-    f = SESSIONS_STORE / f"{sid}.json"
-    if f.exists():
-        return json.loads(f.read_text())
-    return JSONResponse({"error": "unknown session"}, status_code=404)
+    """Replay: a session's recorded events (data access — live or persisted)."""
+    h = resolve_session(sid)
+    if not h:
+        return JSONResponse({"error": "unknown session"}, status_code=404)
+    return {"session_id": sid, "status": h.status, "events": h.history}
 
 
 @app.post("/api/session/{sid}/message")
 async def session_message(sid: str, body: dict):
-    """One chat input. Routes free text by session state (approve/refine/coach)."""
-    h = SESSIONS.get(sid)
+    """One chat input — control: routes free text on a LIVE session only."""
+    h = live_session(sid)
     if not h:
-        return JSONResponse({"error": "unknown session"}, status_code=404)
+        return JSONResponse({"error": "session is not running"}, status_code=409)
     intent = h.message(body.get("text", ""))
     return {"ok": True, "intent": intent, "status": h.status}
 
 
 @app.post("/api/session/{sid}/action")
 async def session_action(sid: str, body: dict):
-    """Explicit control buttons (pause/stop/approve/override)."""
-    h = SESSIONS.get(sid)
+    """Explicit control buttons (pause/stop/approve/override) — LIVE session only."""
+    h = live_session(sid)
     if not h:
-        return JSONResponse({"error": "unknown session"}, status_code=404)
+        return JSONResponse({"error": "session is not running"}, status_code=409)
     h.submit_action(body.get("action", "continue"), body.get("text"), body.get("override"))
     return {"ok": True, "status": h.status}
 
@@ -265,7 +294,7 @@ async def render_video(sid: str):
     Streams render_progress events; emits a final SESSION_DONE with the mp4 path.
     """
     from deep_viper.session.events import Event, EventType
-    h = SESSIONS.get(sid)
+    h = resolve_session(sid)   # live, else rehydrated from the persisted record
     if not h:
         return JSONResponse({"error": "unknown session"}, status_code=404)
     if not h.blend_path or not Path(h.blend_path).exists():
@@ -322,7 +351,7 @@ def get_video(path: str):
 @app.websocket("/ws/{sid}")
 async def session_ws(ws: WebSocket, sid: str):
     await ws.accept()
-    h = SESSIONS.get(sid)
+    h = resolve_session(sid)
     if not h:
         await ws.send_json({"type": "error", "message": "unknown session"})
         await ws.close()

@@ -1,4 +1,4 @@
-from deep_viper.planning.task_planner import SubTask
+from deep_viper.domain import SubTask
 from deep_viper.planning.conflict import (
     SimulatedScene, ConflictRecord,
     FULL_OVERLAP_THRESHOLD,
