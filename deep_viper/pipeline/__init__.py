@@ -12,7 +12,8 @@ Each stage is an independent callable with typed domain I/O, usable headless
 Stages import only from domain (L1) and primitives (L0). They never import
 session or drivers (L3/L4).
 """
+from deep_viper.pipeline.routing import TrajectoryPlanner
 from deep_viper.pipeline.kinematics import KinematicsStage
 from deep_viper.pipeline.rendering import Renderer
 
-__all__ = ["KinematicsStage", "Renderer"]
+__all__ = ["TrajectoryPlanner", "KinematicsStage", "Renderer"]
