@@ -10,6 +10,7 @@ from deep_viper.config import Config
 from deep_viper.scene.state import SceneState, SceneObject
 from deep_viper.memory.causal import CausalMemory
 from deep_viper.domain import SubTask
+from deep_viper.pipeline import KinematicsStage
 from deep_viper.planning.task_planner import plan_tasks
 from deep_viper.planning.plan_validator import validate_and_expand
 from deep_viper.planning.trajectory_agent import run_trajectory, TrajectoryState
@@ -325,12 +326,13 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
     print(f"  total_vlm_calls         : {session_summary['total_vlm_calls']}")
     print(f"  causal_memory entries   : {len(memory.entries)}")
 
-    # Phase 3: synthesize joint trajectory (3D scenes only)
+    # Kinematics stage: synthesize the joint trajectory (3D scenes only).
     joint_trajectory = None
     if scene.is_3d:
-        joint_trajectory = _build_joint_trajectory(scene, committed_paths)
-        if joint_trajectory:
-            print(f"[IK] Joint trajectory: {len(joint_trajectory)} frames "
+        jt = KinematicsStage().solve(committed_paths, scene)
+        if jt:
+            joint_trajectory = [f.__dict__ for f in jt.frames]
+            print(f"[IK] Joint trajectory: {len(jt)} frames "
                   f"across {len(committed_paths)} segment(s).")
 
     _save_log(run_dir, goal, subtasks, metrics, conflict_log, committed_paths,
@@ -356,31 +358,6 @@ def run_session(goal: str, dataset_path: str, cfg: Config, conflict_default: str
               image_path=str(run_dir / "session.gif"),
               run_dir=str(run_dir), summary=session_summary,
               num_segments=len(committed_paths))
-
-
-def _build_joint_trajectory(scene: SceneState, committed_paths: list) -> list | None:
-    """Run IK over committed 3D waypoints to produce a frame-by-frame joint trajectory."""
-    import numpy as np
-    from deep_viper.planning.joint_trajectory import build_joint_trajectory
-
-    # Arm base matrix — must match generate_scene.py: (0, -(TABLE_D/2+0.12), TABLE_H)
-    # TABLE_D=0.8, TABLE_H=table_z. Derive from scene.table_z.
-    table_z = scene.table_z if scene.table_z is not None else 0.75
-    arm_base = np.eye(4)
-    arm_base[:3, 3] = [0.0, -(0.8 / 2 + 0.12), table_z]
-
-    # Box height lookup from the scene's 3D object sizes
-    def box_height(obj_id):
-        obj = scene.get_object(obj_id) if obj_id is not None else None
-        if obj is not None and obj.size_3d is not None:
-            return obj.size_3d[2]
-        return 0.06  # fallback
-
-    try:
-        return build_joint_trajectory(committed_paths, table_z, arm_base, box_height)
-    except Exception as e:
-        print(f"[IK] Joint trajectory synthesis failed: {e}")
-        return None
 
 
 def _save_log(run_dir: Path, goal: str, subtasks: list, metrics: list,

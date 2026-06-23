@@ -35,6 +35,18 @@ class CommittedPath:
     arm_start_3d: Point3D | None = None
     goal_pos_3d: Point3D | None = None
 
+    def to_dict(self) -> dict:
+        d = {"arm_start": self.arm_start, "waypoints": self.waypoints,
+             "goal_pos": self.goal_pos, "subtask_label": self.subtask_label,
+             "target_id": self.target_id, "carrying_label": self.carrying_label,
+             "carried_id": self.carried_id, "best_score": self.best_score,
+             "obj_snapshot": self.obj_snapshot}
+        for k in ("waypoints_3d", "arm_start_3d", "goal_pos_3d"):
+            v = getattr(self, k)
+            if v is not None:
+                d[k] = v
+        return d
+
 
 @dataclass
 class JointFrame:
